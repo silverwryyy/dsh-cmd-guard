@@ -1,7 +1,7 @@
 {
   "name": "dsh-cmd-guard",
-  "version": "0.1.1",
-  "description": "Structural command parser for DeepSeek Harness. Eight layers read every command, the stated intent is checked against the action, and hard denies cannot be overridden.",
+  "version": "0.1.2",
+  "description": "Structural command parser for DeepSeek Harness. Eight layers read every command, the stated intent is checked against the action, and hard denies cannot be overridden. Fail closed by design.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/src/index.js",
@@ -18,11 +18,20 @@
     "README.md",
     "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/silverwryyy/dsh-cmd-guard.git"
+  },
+  "homepage": "https://github.com/silverwryyy/dsh-cmd-guard#readme",
+  "bugs": {
+    "url": "https://github.com/silverwryyy/dsh-cmd-guard/issues"
+  },
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
     "guard",
-    "security"
+    "security",
+    "fail-closed"
   ],
   "dsh": {
     "bundle": {

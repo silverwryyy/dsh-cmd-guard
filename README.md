@@ -292,7 +292,9 @@ DSH 当前版本线全部是预发布（`0.2.x-rc.*`），`^0.2.0` 匹配不到�
 
 证据等级：**宿主组件级真机验证** —— 真实 `cordis Context`、真实 `dsh-system-prompt`、真实 `dsh-tools`，
 加载的是从 npm 安装的包，不是本地源码，也不是 mock。
-未覆盖：`dsh plugin add` 端到端（本机无 pnpm），即「用户怎么装」这一环没有实跑。
+`dsh plugin add` 已在本机实跑通过：装 pnpm 后 `dsh plugin add dsh-cmd-guard` 成功，
+注册走 `dsh.profile.bundles`（不是 `--patch`），配置树里能看到 `cmd-guard`。
+仍未覆盖：headless 启动——缺模型凭证，进程挂住，所以「启动之后真拦截」这一环没有取到证据。
 
 这个范围的上限就是 semver 本身：未来任何新的 `0.2.x-rc.N` 想被匹配，都得再往范围里加一段。
 它不能靠推理一次写死。
