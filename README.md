@@ -6,6 +6,28 @@ DeepSeek Harness 的命令结构解析护栏。
 
 ---
 
+## 快速开始
+
+装进 DSH 宿主：
+
+```bash
+dsh plugin add dsh-cmd-guard
+```
+
+或者只装包，跑断言看判定表：
+
+```bash
+npm install dsh-cmd-guard
+npm test
+```
+
+装完之后 `dsh` 的配置树里能看到 `cmd-guard`。
+
+`npm test` 的 292 条断言不需要模型凭证，装上就能跑，跑完能看到每一条命令落在 pass / ask / deny 哪一格。
+完整 headless 启动需要一个可用模型，当前本机没有凭证，见文末「兼容性」里的证据等级说明。
+
+---
+
 ## 先说它不做什么
 
 这一节放在最前面，因为它比功能更重要。
