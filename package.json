@@ -1,6 +1,6 @@
 {
   "name": "dsh-cmd-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Structural command parser for DeepSeek Harness. Eight layers read every command, the stated intent is checked against the action, and hard denies cannot be overridden.",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,7 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.2.0-0 <0.3.0"
+    "@deepseek-ai/dsh": ">=0.2.0-0 <0.3.0 || >=0.2.2-rc.0 <0.3.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {

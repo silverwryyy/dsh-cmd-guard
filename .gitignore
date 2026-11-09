@@ -34,6 +34,7 @@ coverage/
 .env
 .env.local
 .env.*.local
+.npmrc
 
 # ---- 编辑器与系统 ----
 .vscode/*
