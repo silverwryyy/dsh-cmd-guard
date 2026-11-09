@@ -1,0 +1,334 @@
+{
+  "schema": 3,
+  "description": "dsh-cmd-guard regression corpus. expect is one of: deny | ask | pass. deny is only reachable from ctx.tools.guard; ask is returned from pre-execute. The plugin performs zero IO and never reads script contents, so interpreter calls are classified by path provenance, not by file existence.",
+  "interp_policy": {
+    "rationale": "A plugin that cannot read the file cannot vouch for it. 'File exists on disk' is not an audit. The only defensible line is where the path comes from.",
+    "pass": [
+      "explicit script path inside the workspace, given as a relative path with no parent-directory escape"
+    ],
+    "ask": [
+      "inline program text: -c / -e / --eval / eval",
+      "stdin or device input: - / con / /dev/stdin",
+      "module selector rather than a path: -m <module>",
+      "absolute path outside the workspace",
+      "path inside temp or volatile roots: %TEMP% / %TMP% / AppData\\Local\\Temp",
+      "parent-directory escape: any .. segment that climbs above the workspace root",
+      "file written earlier in the same session, executed immediately (TOCTOU)",
+      "bundled short flags that carry a program body: -uc / -pe / -ep",
+      "interpreter named by path or version: C:\\Python39\\python.exe / python3.11 / node18"
+    ],
+    "residual_risk": "A workspace-relative script may itself shell out. The plugin audits command structure, not program behaviour. This limit is stated in the README rather than papered over.",
+    "codes": [
+      "INTERP_FETCH_EXECUTE",
+      "INTERP_INLINE_BODY",
+      "INTERP_LOCAL_BUILD",
+      "INTERP_MODULE_SELECTOR",
+      "INTERP_OUTSIDE_WORKSPACE",
+      "INTERP_PARENT_ESCAPE",
+      "INTERP_RECENT_WRITE",
+      "INTERP_STDIN",
+      "INTERP_VOLATILE_PATH",
+      "SPLIT_OPERATOR"
+    ]
+  },
+  "cases": [
+    {
+      "id": "R-001",
+      "layer": "rules",
+      "cmd": "del /s /q C:\\Windows\\System32",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Recursive delete under a system root. Hard blacklist, no ask path."
+    },
+    {
+      "id": "R-002",
+      "layer": "rules",
+      "cmd": "format D: /q",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Destructive volume format. No legitimate model intent should reach this."
+    },
+    {
+      "id": "R-003",
+      "layer": "rules",
+      "cmd": "rd /s /q C:\\",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Drive-root recursive removal."
+    },
+    {
+      "id": "R-004",
+      "layer": "rules",
+      "cmd": "reg delete HKLM\\SYSTEM /f",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Machine-wide registry hive deletion."
+    },
+    {
+      "id": "R-005",
+      "layer": "rules",
+      "cmd": "dir D:\\AI_Assistant",
+      "expect": "pass",
+      "why_required": false,
+      "note": "Control: plain read-only listing that must not be caught."
+    },
+    {
+      "id": "SP-001",
+      "layer": "split",
+      "cmd": "type a.txt | cmd",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Pipe feeds an interpreter shell. Right-hand side is not inspectable as a chain."
+    },
+    {
+      "id": "SP-002",
+      "layer": "split",
+      "cmd": "dir && del /q *",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Chained execution hides a destructive second stage behind a harmless first."
+    },
+    {
+      "id": "SP-003",
+      "layer": "split",
+      "cmd": "copy a b & format d:",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Single ampersand: unconditional sequencing, second stage destructive."
+    },
+    {
+      "id": "SP-004",
+      "layer": "split",
+      "cmd": "echo hi ^| more",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Caret-escaped pipe. Escape sequences that reassemble into an operator must still surface."
+    },
+    {
+      "id": "SP-005",
+      "layer": "split",
+      "cmd": "node -v",
+      "expect": "pass",
+      "why_required": false,
+      "note": "Control: single simple command, no operators."
+    },
+    {
+      "id": "SP-006",
+      "layer": "split",
+      "cmd": "bash -c \"diff <(cat a) <(cat b)\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Process substitution: the path handed to the tool is an anonymous pipe that never exists on disk, so no provenance check can apply."
+    },
+    {
+      "id": "U-001",
+      "layer": "unwrap",
+      "cmd": "powershell -Command \"del /s /q D:\\\"",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Nested shell. Outer layer looks like a normal powershell call; payload is a delete."
+    },
+    {
+      "id": "U-002",
+      "layer": "unwrap",
+      "cmd": "cmd /c del /s /q D:\\",
+      "expect": "deny",
+      "why_required": true,
+      "note": "cmd /c direct pass-through."
+    },
+    {
+      "id": "U-003",
+      "layer": "unwrap",
+      "cmd": "python tools\\run_bg.py start x -- del /s /q D:\\",
+      "expect": "deny",
+      "why_required": true,
+      "note": "Real incident from this workspace: a wrapper script forwards '--' arguments into a shell. Argument passthrough counts as unwrapping. This case must survive every refactor of the path-provenance rule, because a pass verdict here would be a live bypass."
+    },
+    {
+      "id": "U-004",
+      "layer": "unwrap",
+      "cmd": "git -c core.pager=calc log",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Config-injection shell escape: a benign-looking -c overrides an execution hook."
+    },
+    {
+      "id": "U-005",
+      "layer": "unwrap",
+      "cmd": "git status",
+      "expect": "pass",
+      "why_required": false,
+      "note": "Control: bare VCS query."
+    },
+    {
+      "id": "I-001",
+      "layer": "interp",
+      "cmd": "python -c \"print(1)\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Inline program text. Even trivial bodies must surface, because the shape is unauditable by definition."
+    },
+    {
+      "id": "I-002",
+      "layer": "interp",
+      "cmd": "npx some-random-package",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Fetch-and-execute: code that does not yet exist on disk."
+    },
+    {
+      "id": "I-003",
+      "layer": "interp",
+      "cmd": "pip install .",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Local build backend runs arbitrary setup hooks."
+    },
+    {
+      "id": "I-004",
+      "layer": "interp",
+      "cmd": "node -e \"require('fs').rmSync('D:/x',{recursive:true})\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Inline node program performing a recursive delete."
+    },
+    {
+      "id": "I-005",
+      "layer": "interp",
+      "cmd": "python scripts\\an_scan.py",
+      "expect": "pass",
+      "why_required": false,
+      "note": "Control: workspace-relative explicit path, no parent escape, no inline body. Passes on path provenance alone. Note what this does NOT assert: the plugin has not opened the file and cannot vouch for its contents."
+    },
+    {
+      "id": "I-006",
+      "layer": "interp",
+      "cmd": "python %TEMP%\\payload.py",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Volatile root. A path that any process on the machine can write to is not a provenance claim."
+    },
+    {
+      "id": "I-007",
+      "layer": "interp",
+      "cmd": "python C:\\Users\\Public\\a.py",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Absolute path outside the workspace: the user cannot see the target without leaving the project."
+    },
+    {
+      "id": "I-008",
+      "layer": "interp",
+      "cmd": "python -",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Stdin input. No file argument at all, so a 'has a file argument' check passes this straight through."
+    },
+    {
+      "id": "I-009",
+      "layer": "interp",
+      "cmd": "python -m http.server 8000",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Module selector, not a path. Resolved off sys.path at runtime, so no file can be pointed at."
+    },
+    {
+      "id": "I-010",
+      "layer": "interp",
+      "cmd": "node ..\\..\\evil.js",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Parent-directory escape. Relative and syntactically innocent, but resolves outside the workspace root."
+    },
+    {
+      "id": "I-011",
+      "layer": "interp",
+      "cmd": "python scripts\\fresh.py",
+      "expect": "ask",
+      "why_required": true,
+      "requires_state": "recent_write",
+      "note": "TOCTOU: same shape as I-005, but this path was written earlier in the same session. Write-then-run is a complete bypass if the two are judged independently, so the guard keeps a short-lived write ledger."
+    },
+    {
+      "id": "O-001",
+      "layer": "obfusc",
+      "cmd": "python -c \"import base64;exec(base64.b64decode('ZGVs'))\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Base64 decode feeding exec."
+    },
+    {
+      "id": "O-002",
+      "layer": "obfusc",
+      "cmd": "powershell -c \"[char]100+[char]101+[char]108\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Char-code assembly: the literal command never appears in the string."
+    },
+    {
+      "id": "O-003",
+      "layer": "obfusc",
+      "cmd": "cmd /c \"d^e^l /q *\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Caret splitting inside a token to defeat literal matching."
+    },
+    {
+      "id": "O-004",
+      "layer": "obfusc",
+      "cmd": "python -c \"__import__('os').system('x')\"",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Dynamic import via dunder, used to dodge static import inspection."
+    },
+    {
+      "id": "O-005",
+      "layer": "obfusc",
+      "cmd": "git log --oneline -5",
+      "expect": "pass",
+      "why_required": false,
+      "note": "Control: no obfuscation signal present."
+    },
+    {
+      "id": "W-001",
+      "layer": "why",
+      "cmd": "del D:\\temp\\a.txt",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Destructive but scoped and legitimate. Blocked only because no intent was stated."
+    },
+    {
+      "id": "W-002",
+      "layer": "why",
+      "cmd": "shutdown /r /t 0",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Host reboot. Requires stated intent every time."
+    },
+    {
+      "id": "W-003",
+      "layer": "why",
+      "cmd": "reg add HKCU\\Software\\X /v Y /d Z",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Persistent user-scope state change."
+    },
+    {
+      "id": "W-004",
+      "layer": "why",
+      "cmd": "npm i -g some-cli",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Global install: machine-wide mutation plus network fetch."
+    },
+    {
+      "id": "W-005",
+      "layer": "why",
+      "cmd": "del D:\\temp\\a.txt",
+      "expect": "pass",
+      "why_required": true,
+      "why": "Remove a stale scratch file produced by the build; contents already regenerated.",
+      "note": "Control: identical command to W-001, distinguishable only by a stated reason. This pair is the core thesis of the plugin."
+    }
+  ]
+}

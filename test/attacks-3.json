@@ -1,0 +1,91 @@
+{
+  "schema": 3,
+  "description": "Batch 3: tool-identity cases and the substance-based why checks. Added after verifying the shipped declarations: command tools are bash/pwsh taking `command`, and `description` is already required, so 'must state why' cannot be the claim.",
+  "cases": [
+    {
+      "id": "E-001",
+      "layer": "entry",
+      "cmd": "git status --short",
+      "tool": "bash",
+      "command_source": "command",
+      "expect": "pass",
+      "note": "A known shell tool with the shipped argument key and a read-only command. Nothing to say."
+    },
+    {
+      "id": "E-002",
+      "layer": "entry",
+      "cmd": "git status --short",
+      "tool": "pwsh",
+      "command_source": "command",
+      "expect": "pass",
+      "note": "The Windows shell tool. Registered as pwsh in 0.2.x, not run_command."
+    },
+    {
+      "id": "E-003",
+      "layer": "entry",
+      "cmd": "rm -rf build",
+      "tool": "mcp_shell_exec",
+      "command_source": "command",
+      "expect": "ask",
+      "note": "Unknown tool carrying a command-shaped argument. Fails closed instead of being analysed as if it were bash."
+    },
+    {
+      "id": "E-004",
+      "layer": "entry",
+      "cmd": "git status --short",
+      "tool": "pwsh",
+      "command_source": "cmdline",
+      "expect": "ask",
+      "note": "Argument key drift. A silent rename is exactly the failure that leaves a guard installed and inert."
+    },
+    {
+      "id": "E-005",
+      "layer": "rules",
+      "cmd": "rd /s /q C:\\",
+      "tool": "pwsh",
+      "command_source": "command",
+      "expect": "deny",
+      "note": "Entry passing must not shadow a hard rule. Deny still comes from the rules layer."
+    },
+    {
+      "id": "Y-001",
+      "layer": "why",
+      "cmd": "del D:\\temp\\a.txt",
+      "why": "run command",
+      "expect": "ask",
+      "note": "Non-empty and schema-satisfying, but names the act rather than a goal."
+    },
+    {
+      "id": "Y-002",
+      "layer": "why",
+      "cmd": "del D:\\temp\\a.txt",
+      "why": "del D:\\temp\\a.txt",
+      "expect": "ask",
+      "note": "Restatement carries no information the command string did not already carry."
+    },
+    {
+      "id": "Y-003",
+      "layer": "why",
+      "cmd": "del D:\\temp\\a.txt",
+      "why": "Read the file first to check whether it is still in use.",
+      "expect": "ask",
+      "note": "Claims a read while performing a delete. Either the description or the command is wrong."
+    },
+    {
+      "id": "Y-004",
+      "layer": "why",
+      "cmd": "git push --force",
+      "why": "Force-push the reviewed branch to origin so the release tag points at the squashed commit.",
+      "expect": "pass",
+      "note": "The bar is a real statement of purpose, not a password."
+    },
+    {
+      "id": "Y-005",
+      "layer": "why",
+      "cmd": "del D:\\temp\\a.txt",
+      "why": "ok",
+      "expect": "ask",
+      "note": "Placeholder length."
+    }
+  ]
+}

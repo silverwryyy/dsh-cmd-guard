@@ -1,0 +1,17 @@
+# dsh-cmd-guard bundle patch
+#
+# Exactly one insert line on purpose. Mounting the same `name` twice would
+# load two independent module instances, each holding its own guard state.
+# Both modules (guard + changeset) are wired inside a single `apply`, gated
+# by `config`.
+
+- insert:
+    - id: cmd-guard
+      name: dsh-cmd-guard
+      config:
+        guard:
+          enabled: true
+        changeset:
+          # Requires danger-full-access. Off by default so a stock profile
+          # never gains write-to-self capability on install.
+          enabled: false

@@ -1,0 +1,50 @@
+# ---- 本项目的编译产物 ----
+# tsc 输出目录。Node 模板只忽略 dist/，不忽略 lib/，必须自己补这一行。
+lib/
+
+# ---- 打包与本地临时产物 ----
+*.tgz
+tmp_pack/
+
+# ---- 日志 ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+
+# ---- 依赖 ----
+node_modules/
+jspm_packages/
+.pnp
+.pnp.js
+
+# ---- 运行时数据 ----
+.npm
+.cache/
+.temp/
+
+# ---- 测试与覆盖率 ----
+coverage/
+.nyc_output/
+*.lcov
+
+# ---- 环境与凭证 ----
+.env
+.env.local
+.env.*.local
+
+# ---- 编辑器与系统 ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 构建缓存 ----
+*.tsbuildinfo

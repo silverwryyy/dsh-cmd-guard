@@ -1,0 +1,54 @@
+{
+  "schema": 3,
+  "description": "Batch 2. Gaps found by probing the parser with commands that are not in batch 1: history-rewriting git subcommands and the POSIX filesystem root. Both were passing silently.",
+  "cases": [
+    {
+      "id": "R-006",
+      "layer": "rules",
+      "cmd": "rm -rf /",
+      "expect": "deny",
+      "why_required": true,
+      "note": "POSIX filesystem root. Batch 1 only recognised Windows drive roots, so this passed. No stated reason makes this acceptable."
+    },
+    {
+      "id": "R-007",
+      "layer": "rules",
+      "cmd": "rm -rf ./build",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Control: recursive delete with a scoped target must not be denied. It lands in the why layer instead."
+    },
+    {
+      "id": "G-001",
+      "layer": "why",
+      "cmd": "git push --force",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Overwrites remote history. Legitimate on a personal branch often enough that deny would be wrong, destructive enough that silence is worse."
+    },
+    {
+      "id": "G-002",
+      "layer": "why",
+      "cmd": "git reset --hard HEAD~1",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Discards working-tree changes without a reflog path back to them."
+    },
+    {
+      "id": "G-003",
+      "layer": "why",
+      "cmd": "git clean -fdx",
+      "expect": "ask",
+      "why_required": true,
+      "note": "Removes untracked files, including ignored build output that may be unreproducible."
+    },
+    {
+      "id": "G-004",
+      "layer": "why",
+      "cmd": "git push origin main",
+      "expect": "pass",
+      "why_required": false,
+      "note": "Control: an ordinary push must not be caught. Only history rewriting needs a stated reason."
+    }
+  ]
+}
