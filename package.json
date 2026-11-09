@@ -48,6 +48,7 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "prepublishOnly": "npm test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test lib/test/*.test.js"
