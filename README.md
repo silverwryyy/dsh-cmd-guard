@@ -14,16 +14,21 @@ DeepSeek Harness 的命令结构解析护栏。
 dsh plugin add dsh-cmd-guard
 ```
 
-或者只装包，跑断言看判定表：
+想跑断言看判定表，克隆仓库：
 
 ```bash
-npm install dsh-cmd-guard
+git clone https://github.com/silverwryyy/dsh-cmd-guard
+cd dsh-cmd-guard
+npm install
 npm test
 ```
 
 装完之后 `dsh` 的配置树里能看到 `cmd-guard`。
 
-`npm test` 的 292 条断言不需要模型凭证，装上就能跑，跑完能看到每一条命令落在 pass / ask / deny 哪一格。
+`npm test` 只在仓库里成立 —— npm 包只含 `lib/src`，不含测试与语料，
+`npm install dsh-cmd-guard` 之后没有测试可跑。
+292 条断言不需要模型凭证，跑完能看到每一条命令落在 pass / ask / deny 哪一格。
+首次 `npm install` 会连带装 peer 依赖，本机实测约 3 分钟、653 个包。
 完整 headless 启动需要一个可用模型，当前本机没有凭证，见文末「兼容性」里的证据等级说明。
 
 ---
