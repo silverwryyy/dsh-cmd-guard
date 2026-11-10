@@ -16,7 +16,7 @@ import {
 } from '../src/guard/mount.js'
 import { looksLikeCommandString } from '../src/guard/shape.js'
 import { verify } from '../src/guard/verify.js'
-import { isFailedResult } from '../src/index.js'
+import { apply, isFailedResult } from '../src/index.js'
 import type { GuardInput, GuardState } from '../src/guard/types.js'
 
 const STATE: GuardState = { workspaceRoot: 'D:/AI_Assistant' }
@@ -241,4 +241,62 @@ test('W6-A3: command text in a data field is not a command line', () => {
   )
   assert.equal(result.verdict, 'pass')
   assert.equal(result.code, 'PASS')
+})
+
+/**
+ * Residual risk 12, pinned. The hard-deny mount is ctx.tools.guard; a host
+ * without it still installs this plugin and still gets the pre-execute
+ * waterfall, so a guard that cannot deny looks exactly like one that can.
+ * The warning is the only signal, which makes its removal a silent regression.
+ */
+function makeCtx(options: { withGuard: boolean }) {
+  const warnings: string[] = []
+  const guards: Array<(exec: unknown) => string | undefined> = []
+  const events: string[] = []
+
+  const ctx: Record<string, unknown> = {
+    logger: { warn: (message: string) => warnings.push(message) },
+    on: (event: string) => {
+      events.push(event)
+      return () => {}
+    },
+  }
+
+  if (options.withGuard) {
+    ctx.tools = {
+      guard: (fn: (exec: unknown) => string | undefined) => {
+        guards.push(fn)
+        return () => {}
+      },
+    }
+  }
+
+  return { ctx, warnings, guards, events }
+}
+
+test('hard deny mounts when the host offers ctx.tools.guard, and only ever denies', () => {
+  const { ctx, warnings, guards } = makeCtx({ withGuard: true })
+  apply(ctx, { guard: { workspaceRoot: 'D:/AI_Assistant' } })
+
+  assert.equal(guards.length, 1, 'the hard-deny mount did not register')
+  assert.equal(warnings.length, 0)
+
+  const guard = guards[0]
+  assert.ok(guard, 'guards[0] must exist after the length assertion')
+  assert.equal(typeof guard({ name: 'pwsh', arguments: { command: 'rd /s /q C:\\' } }), 'string')
+  assert.equal(guard({ name: 'pwsh', arguments: { command: 'git status' } }), undefined)
+  assert.equal(guard({ name: 'read_file', arguments: { filepath: 'D:/AI_Assistant/a.txt' } }), undefined)
+})
+
+test('a host without ctx.tools.guard warns instead of pretending to guard', () => {
+  const { ctx, warnings, events } = makeCtx({ withGuard: false })
+  apply(ctx, { guard: { workspaceRoot: 'D:/AI_Assistant' } })
+
+  assert.equal(warnings.length, 1)
+  const warning = warnings[0]
+  assert.ok(warning, 'warnings[0] must exist after the length assertion')
+  assert.match(warning, /ctx\.tools\.guard is unavailable/)
+  // The waterfall is still installed: that is exactly why the warning matters.
+  assert.ok(events.includes('tools/pre-execute'))
+  assert.ok(events.includes('tools/post-execute'))
 })
