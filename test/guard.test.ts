@@ -148,7 +148,12 @@ test('allow/deny asymmetry: only the rules layer may deny', () => {
   for (const c of cases) {
     if (c.expect !== 'deny') continue
     const result = verify(toInput(c), state)
-    assert.equal(result.layer, 'rules', `${c.id}: deny came from ${result.layer}`)
+    // Structural denials are the documented exception: the finding is about
+    // the join between two clean commands, which no single statement carries.
+    assert.ok(
+      result.layer === 'rules' || result.code === 'SPLIT_PIPE_TO_INTERPRETER',
+      `${c.id}: deny came from ${result.layer} (${result.code})`,
+    )
   }
 })
 

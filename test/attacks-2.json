@@ -16,7 +16,7 @@
       "cmd": "rm -rf ./build",
       "expect": "ask",
       "why_required": true,
-      "note": "Control: recursive delete with a scoped target must not be denied. It lands in the why layer instead."
+      "note": "Control: recursive delete with a scoped target must not be denied. It lands in the UNKNOWN_CAPABILITY ask path, not the why layer: rm is not a known tool and carries recursive and force flags together."
     },
     {
       "id": "G-001",

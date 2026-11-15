@@ -2,7 +2,10 @@
  * Verdict vocabulary.
  *
  * Three states, and the asymmetry matters:
- *   deny   terminal, unreachable outside the rules layer
+ *   deny   terminal, answered by the rules layer for command content, and by
+ *          split for the one structural fact that denies on its own - see
+ *          STRUCTURAL_DENY in verify.ts, the allowlist that lets it past the
+ *          downgrade
  *   ask    a human decision is required
  *   pass   no layer objected
  *
@@ -88,6 +91,25 @@ export interface GuardState {
    * Normalised with forward slashes, compared case-insensitively.
    */
   readonly recentWrites?: readonly string[] | undefined
+
+  /**
+   * How a chain (`a; b`, `a | b`, `a && b`, a second line) is judged.
+   *
+   * `strict` (default): any operator is an ask. The parser refuses to take
+   * responsibility for a structure it did not fully parse, which means every
+   * piped command costs one approval.
+   *
+   * `decompose`: split on `;`, `|`, `&&`, `||` and unquoted newlines, then
+   * judge each statement against the full layer set. A deny behind a harmless
+   * first statement is still a deny - `git status && rm -rf /` measures that.
+   * Structural uncertainty still asks: command substitution, process
+   * substitution, a background `&`, or more statements than the planner will
+   * hold in view.
+   *
+   * The default stays `strict` because decompose makes the guard answer less
+   * often, and a security default that answers less often is the wrong gift.
+   */
+  readonly chain?: 'strict' | 'decompose' | undefined
 }
 
 export interface GuardResult {

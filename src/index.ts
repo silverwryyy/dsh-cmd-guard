@@ -57,6 +57,25 @@ export interface CmdGuardConfig {
      * open otherwise, and this listener only observes.
      */
     recordWrites?: boolean
+    /**
+     * How a chain (`a; b`, `a | b`, `a && b`) is judged.
+     *
+     * `strict` (default) asks on any operator: the parser will not vouch for a
+     * structure it did not fully parse. `decompose` splits the chain and judges
+     * each statement on its own, so a piped command is judged by what each part
+     * does rather than by the fact that it is piped.
+     *
+     * Decompose does not weaken the guard. A deny anywhere in the chain is the
+     * verdict for the whole call; the structures it cannot read as statements
+     * still ask - command substitution, process substitution, a background job,
+     * and chains longer than four statements; and every statement is judged by
+     * the intent layer, so a mutating tail cannot hide behind a harmless head.
+     * (That last one was a measured hole in the first cut of this mode.)
+     *
+     * The default is unchanged because a security default that answers less
+     * often is not a gift; opt in where the operator is actually watching.
+     */
+    chain?: 'strict' | 'decompose'
   }
   changeset?: {
     /**
@@ -71,12 +90,18 @@ export interface CmdGuardConfig {
 }
 
 interface ResolvedConfig {
-  guard: { enabled: boolean; workspaceRoot: string; cwd: string; recordWrites: boolean }
+  guard: {
+    enabled: boolean
+    workspaceRoot: string
+    cwd: string
+    recordWrites: boolean
+    chain: 'strict' | 'decompose'
+  }
   changeset: { enabled: boolean; ledgerDir: string | undefined }
 }
 
 const DEFAULTS = {
-  guard: { enabled: true, recordWrites: true },
+  guard: { enabled: true, recordWrites: true, chain: 'strict' },
   changeset: { enabled: false },
 } as const
 
@@ -119,6 +144,7 @@ function resolve(raw: CmdGuardConfig): ResolvedConfig {
       ...(raw.guard ?? {}),
       workspaceRoot: raw.guard?.workspaceRoot ?? cwd,
       cwd,
+      chain: raw.guard?.chain ?? DEFAULTS.guard.chain,
     },
     changeset: {
       enabled: raw.changeset?.enabled ?? DEFAULTS.changeset.enabled,
@@ -212,12 +238,21 @@ function installGuard(ctx: any, cfg: ResolvedConfig): void {
   const state = (): GuardState => ({
     workspaceRoot: cfg.guard.workspaceRoot,
     cwd: cfg.guard.cwd,
+    chain: cfg.guard.chain,
     recentWrites,
   })
 
   note(
     ctx,
     `dsh-cmd-guard: relative paths resolve against ${cfg.guard.cwd}; workspace containment is judged against ${cfg.guard.workspaceRoot}. If a session runs elsewhere, set guard.cwd and guard.workspaceRoot.`,
+  )
+
+  note(
+    ctx,
+    `dsh-cmd-guard: chains are judged in "${cfg.guard.chain}" mode. ` +
+      (cfg.guard.chain === 'decompose'
+        ? 'Each statement of a chain is judged on its own; substitution, a background job and chains longer than four statements still ask.'
+        : 'Any operator asks. Set guard.chain to "decompose" to judge each statement instead.'),
   )
 
   const dispose = (off: unknown): void => {

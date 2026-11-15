@@ -6,8 +6,10 @@
  *   data    before everything: a payload argument is not a command line
  *   entry   first, because a wrong tool name or a renamed argument key makes
  *           every later layer analyse a string it never received
- *   rules   next, because deny must win over everything else and is the only
- *           layer with a deny exit
+ *   rules   next, because deny must win over everything else. Ordinary
+ *           content denials are settled here; the one structural fact that
+ *           also denies - fetched output piped into an interpreter - is read
+ *           by split afterwards, never before this layer has had its say
  *   split   before anything reads tokens, since a chain means the token stream
  *           is not the whole command
  *   obfusc  before unwrapping, so `cmd /c "d^e^l ..."` is reported as what it
@@ -18,12 +20,18 @@
  *   why     last: it only matters once the shape is known to be acceptable
  *
  * First finding wins. A later layer never gets to soften an earlier one.
+ *
+ * `chain: decompose` keeps that order and changes only who it is applied to:
+ * instead of asking because a chain exists, each statement of the chain is run
+ * through the same layers on its own. Deny still outranks ask, and the
+ * structures this layer cannot read as statements (substitution, a background
+ * job, too many parts) still ask - see planChain().
  */
 import type { Finding, GuardInput, GuardResult, GuardState, LayerCheck } from './types.js'
 import { check as entry, DATA_KEYS } from './entry.js'
 import { check as rules } from './rules.js'
 import { check as capability } from './capability.js'
-import { check as split } from './split.js'
+import { check as split, planChain } from './split.js'
 import { check as obfusc } from './obfusc.js'
 import { check as unwrap } from './unwrap.js'
 import { check as interp } from './interp.js'
@@ -45,9 +53,18 @@ export const LAYERS: ReadonlyArray<{ layer: Finding['layer']; check: LayerCheck 
 
 const EMPTY: GuardState = {}
 
-export function verify(input: GuardInput, state: GuardState = EMPTY): GuardResult {
-  const findings: Finding[] = []
+/** Statement depth beyond which decompose stops descending and asks instead. */
+const MAX_DEPTH = 2
 
+type Prepared =
+  | { readonly ok: true; readonly subject: GuardInput }
+  | { readonly ok: false; readonly result: GuardResult }
+
+/**
+ * Everything the pipeline needs settled before a layer runs: unicode folding,
+ * the two populated-key derivations, the empty command, and payload data.
+ */
+function prepare(input: GuardInput): Prepared {
   // Unicode folding before any layer reads the string. Fullwidth latin, a
   // zero-width space, a soft hyphen and a NUL were each measured reaching the
   // end of the pipeline untouched, because every comparison downstream was
@@ -84,11 +101,14 @@ export function verify(input: GuardInput, state: GuardState = EMPTY): GuardResul
 
   if (cmdText.trim().length === 0) {
     return {
-      verdict: 'pass',
-      layer: 'clean',
-      code: 'EMPTY_COMMAND',
-      reason: 'Empty command; nothing to execute.',
-      findings,
+      ok: false,
+      result: {
+        verdict: 'pass',
+        layer: 'clean',
+        code: 'EMPTY_COMMAND',
+        reason: 'Empty command; nothing to execute.',
+        findings: [],
+      },
     }
   }
 
@@ -102,54 +122,195 @@ export function verify(input: GuardInput, state: GuardState = EMPTY): GuardResul
   const source = input.commandSource
   if (source !== undefined && DATA_KEYS.has(source.toLowerCase())) {
     return {
-      verdict: 'pass',
-      layer: 'clean',
-      code: 'DATA_ARGUMENT',
-      reason: `"${source}" carries document or payload data, not a command line. No layer applies.`,
-      findings,
+      ok: false,
+      result: {
+        verdict: 'pass',
+        layer: 'clean',
+        code: 'DATA_ARGUMENT',
+        reason: `"${source}" carries document or payload data, not a command line. No layer applies.`,
+        findings: [],
+      },
     }
   }
 
-  for (const { layer, check } of LAYERS) {
-    const finding = check(subject, state)
-    if (finding === null) continue
+  return { ok: true, subject }
+}
 
-    // Invariant: deny is reachable only from the rules layer, which is the
-    // only mount wired to a guard with no allow exit. Anything else claiming
-    // deny is downgraded to ask rather than trusted.
-    const safe: Finding =
-      finding.verdict === 'deny' && finding.layer !== 'rules'
-        ? { ...finding, verdict: 'ask' }
-        : finding
+export function verify(input: GuardInput, state: GuardState = EMPTY): GuardResult {
+  const prepared = prepare(input)
+  if (!prepared.ok) return prepared.result
+  return run(prepared.subject, state, 0)
+}
 
-    findings.push(safe)
+/**
+ * Codes that may answer deny from outside the rules layer.
+ *
+ * An allowlist rather than a relaxed layer rule, so a future split finding
+ * cannot inherit a deny by accident. Each entry has to name a structural fact
+ * about the text itself - true of the whole string and false of every part of
+ * it. SPLIT_PIPE_TO_INTERPRETER is the first: "this stage executes that
+ * stage's output" cannot be read off any single statement.
+ */
+const STRUCTURAL_DENY: ReadonlySet<string> = new Set(['SPLIT_PIPE_TO_INTERPRETER'])
 
-    // Entry asks first, and the loop stops at the first finding, so a tool
-    // name the parser does not recognise used to turn a hard deny into a
-    // question. A denied string is denied for what it says; an unfamiliar or
-    // renamed executor cannot make it recoverable. Fail closed: give the rules
-    // layer one look before an entry-layer ask ends the pipeline.
-    if (safe.layer === 'entry' && safe.verdict === 'ask') {
-      const hard = rules(subject, state)
-      if (hard !== null && hard.verdict === 'deny') {
-        findings.push(hard)
-        return {
+/**
+ * Turn one finding into the answer, applying the two invariants:
+ *
+ * 1. deny is reachable from the rules layer, and from split for the codes in
+ *    STRUCTURAL_DENY. Anything else claiming deny is downgraded to ask rather
+ *    than trusted: an ask can be approved and a deny cannot, so a layer that
+ *    cannot prove its case must not be the one to end the command.
+ * 2. an entry-layer ask must not outrank a hard deny the string itself earns.
+ *    An unfamiliar or renamed executor cannot make a denied command
+ *    recoverable, so the rules layer gets one look before the pipeline ends.
+ */
+function answer(
+  finding: Finding,
+  subject: GuardInput,
+  state: GuardState,
+  findings: Finding[],
+): GuardResult {
+  const safe: Finding =
+    finding.verdict === 'deny' &&
+    finding.layer !== 'rules' &&
+    !STRUCTURAL_DENY.has(finding.code)
+      ? { ...finding, verdict: 'ask' }
+      : finding
+
+  findings.push(safe)
+
+  if (safe.layer === 'entry' && safe.verdict === 'ask') {
+    const hard = rules(subject, state)
+    if (hard !== null && hard.verdict === 'deny') {
+      findings.push(hard)
+      return {
+        verdict: 'deny',
+        layer: hard.layer,
+        code: hard.code,
+        reason: hard.reason,
+        findings,
+      }
+    }
+  }
+
+  return {
+    verdict: safe.verdict,
+    layer: safe.layer,
+    code: safe.code,
+    reason: safe.reason,
+    findings,
+  }
+}
+
+type Outcome =
+  | { readonly kind: 'result'; readonly result: GuardResult }
+  | { readonly kind: 'passed' }
+  | { readonly kind: 'finding'; readonly finding: Finding | null }
+
+/**
+ * Judge a chain by its statements, or step aside and let the strict path judge
+ * it as one string.
+ */
+function decompose(subject: GuardInput, state: GuardState, depth: number): Outcome {
+  if (depth >= MAX_DEPTH) {
+    // Deeper than we are willing to reason about. Ask the way strict mode
+    // would rather than pretend the nesting was read.
+    return { kind: 'finding', finding: split(subject, state) }
+  }
+
+  const plan = planChain(subject.cmd, state)
+
+  if (plan.kind === 'finding') return { kind: 'finding', finding: plan.finding }
+  if (plan.kind === 'single') return { kind: 'finding', finding: split(subject, state) }
+
+  const findings: Finding[] = []
+  let ask: Finding | null = null
+
+  for (const segment of plan.segments) {
+    // A statement carries no tool name and no argument key: those describe the
+    // call, not the statement, and re-deriving them here would report key
+    // drift once per segment.
+    const judged = run({ cmd: segment, why: subject.why, tool: subject.tool }, state, depth + 1)
+    findings.push(...judged.findings)
+
+    // A deny anywhere in the chain is the answer for the whole call. This is
+    // the case that must never soften: `git status && rm -rf /`.
+    if (judged.verdict === 'deny') {
+      return {
+        kind: 'result',
+        result: {
           verdict: 'deny',
-          layer: hard.layer,
-          code: hard.code,
-          reason: hard.reason,
+          layer: judged.layer,
+          code: judged.code,
+          reason: `${judged.reason} (statement: ${segment})`,
           findings,
-        }
+        },
       }
     }
 
-    return {
-      verdict: safe.verdict,
-      layer: safe.layer,
-      code: safe.code,
-      reason: safe.reason,
-      findings,
+    if (judged.verdict === 'ask' && ask === null) {
+      ask = {
+        layer: judged.layer === 'clean' ? 'split' : judged.layer,
+        verdict: 'ask',
+        code: judged.code,
+        reason: `${judged.reason} (statement: ${segment})`,
+      }
     }
+  }
+
+  if (ask !== null) {
+    return {
+      kind: 'result',
+      result: {
+        verdict: 'ask',
+        layer: ask.layer,
+        code: ask.code,
+        reason: ask.reason,
+        findings,
+      },
+    }
+  }
+
+  // Every statement passed, each having faced the intent layer on its own.
+  // Re-judging the chain here would only re-read its first statement - the
+  // shape that let a mutating tail through unexamined.
+  return { kind: 'passed' }
+}
+
+function run(subject: GuardInput, state: GuardState, depth: number): GuardResult {
+  const findings: Finding[] = []
+
+  for (const { layer, check } of LAYERS) {
+    // Every layer judges a statement, the intent layer included. Skipping it
+    // here was a measured hole: why() reads the command head, so a chain whose
+    // first statement is harmless never faced it as a whole either -
+    // `git status; git push --force` passed, and `echo hi; del x` with it.
+    // A reason stated for the call applies to each statement of the call.
+    if (layer === 'split' && state.chain === 'decompose') {
+      const outcome = decompose(subject, state, depth)
+
+      if (outcome.kind === 'result') return outcome.result
+
+      if (outcome.kind === 'passed') {
+        // Each statement was judged on its own. The remaining layers read the
+        // raw string, and for a chain that string is not the token stream that
+        // runs - so they have nothing left to say about it.
+        return {
+          verdict: 'pass',
+          layer: 'clean',
+          code: 'PASS',
+          reason: 'No layer objected.',
+          findings,
+        }
+      }
+
+      if (outcome.finding === null) continue
+      return answer(outcome.finding, subject, state, findings)
+    }
+
+    const finding = check(subject, state)
+    if (finding === null) continue
+    return answer(finding, subject, state, findings)
   }
 
   return {
