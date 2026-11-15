@@ -11,8 +11,13 @@ DeepSeek Harness 的命令结构解析护栏。
 装进 DSH 宿主：
 
 ```bash
-dsh plugin add dsh-cmd-guard
+dsh plugin --profile web add dsh-cmd-guard
 ```
+
+`--profile` 是必填项。不带它，`dsh plugin` 在参数解析阶段就退出：
+`error: required option '--profile <name>' not specified`。
+`web` / `tui` / `headless` 按要挂载的宿主形态选。
+本机验证宿主版本：`0.2.2-rc.3`。
 
 想跑断言看判定表，克隆仓库：
 
@@ -25,10 +30,34 @@ npm test
 
 装完之后 `dsh` 的配置树里能看到 `cmd-guard`。
 
+### 如果它开始问得太多
+
+判定「相对路径是否在项目内」要靠两个基准：`cwd`（相对路径解析到哪）、
+`workspaceRoot`（判断「在不在项目内」时拿哪个目录当项目）。都不配置时，两个都取宿主进程的启动目录。
+
+问题出在 Web：会话能切工作区，宿主进程的目录不会跟着变。会话不在启动目录下时，
+工作区里的相对路径会被判成区外，本来 pass 的命令变成 ask。**这不是误报，是基准没给。**
+
+挂载时会打一行 info，直接写明当前用的是哪两个目录：
+
+```
+dsh-cmd-guard: relative paths resolve against <cwd>; workspace containment is judged against <workspaceRoot>.
+```
+
+对不上就显式指定：
+
+```json
+{ "guard": { "cwd": "D:/project", "workspaceRoot": "D:/project" } }
+```
+
+只写一个也够，另一个跟着走。两个都没配、又读不到进程目录时，相对路径一律 ask（`unknown-cwd`），
+理由里会指出缺的是基准、不是路径。宁可多问一句，也不猜一个基准放过去。
+
 `npm test` 只在仓库里成立 —— npm 包只含 `lib/src`，不含测试与语料，
 `npm install dsh-cmd-guard` 之后没有测试可跑。
-294 条断言不需要模型凭证，跑完能看到每一条命令落在 pass / ask / deny 哪一格。
-首次 `npm install` 会连带装 peer 依赖，本机实测约 3 分钟、653 个包。
+323 条断言不需要模型凭证，跑完能看到每一条命令落在 pass / ask / deny 哪一格。
+首次 `npm install` 会连带装 peer 依赖，本机实测约 3 分钟、653 个包；
+插件本身零运行时依赖，不想拖宿主就用 `npm install --legacy-peer-deps`，本机实测 3 个包、12 秒。
 完整 headless 启动需要一个可用模型，当前本机没有凭证，见文末「兼容性」里的证据等级说明。
 
 ---
@@ -148,8 +177,15 @@ NFKC 折叠不了的等价写法（同形异码的西里尔字母、部分组合
 - 硬拒绝退化为 ask：`toHardDeny` 无处可挂，`verify` 的 deny 只能从 waterfall 出口出去
 - 叠加第 8 条（无审批服务时 ask 等于 deny），两个降级合起来的行为取决于宿主版本，不是插件能保证的
 
+这一层在不在，取决于宿主版本：
+
+| 宿主 | `ctx.tools.guard` | 硬拒绝层 |
+|---|---|---|
+| `0.2.1-rc.2` 及更早 | 不存在 | 挂不上，deny 退化为 ask |
+| `0.2.2-rc.x`（含本机 `0.2.2-rc.3`） | 存在 | 正常挂载，deny 翻不了案 |
+
 **所以「装上了」不等于「拦住了」。** 判据是启动日志里有没有 `ctx.tools.guard is unavailable`。
-有这条，就说明当前宿主上 deny 不可信，不能把它当最后一道闸。
+有这条，就说明当前宿主上 deny 不可信，不能当最后一道闸；没有，就是挂上了。
 
 ---
 
@@ -257,7 +293,17 @@ pass 映射成 `null` 而不是 `{kind:'allow'}` 是有意的：`pre-execute` �
 npm test
 ```
 
-**294 条断言全绿**，其中 256 条是命令语料，分 8 批。
+在 DSH 沙箱里跑可能直接 `EPERM`：`node --test` 默认每个测试文件起一个子进程，沙箱禁管道 stdio。
+改在同一进程里跑：
+
+```bash
+npm run test:isolated
+```
+
+等价于 `node --test --test-isolation=none lib/test/*.test.js`，覆盖同一套 323 条断言。
+
+**323 条断言全绿**：256 条命令语料（分 8 批）+ 67 条结构、挂载与不变量断言。
+其中一条是跨目录回归：整份语料在 `os.tmpdir()` 下重跑一遍，判定必须逐条不变。
 
 语料是按轮次冻结的，每一批对应一次「换个角度攻击」，而不是一次随手补样：
 
@@ -323,8 +369,8 @@ DSH 当前版本线全部是预发布（`0.2.x-rc.*`），`^0.2.0` 匹配不到�
 于是 `dsh plugin add` 直接 ERESOLVE 失败。实测三段并集下 `0.2.1-rc.2` 为 true，
 `0.3.0-rc.1` / `0.1.9` 仍为 false，上限没有被放宽。
 
-**范围能匹配，不等于宿主功能完整。** 0.2.1-rc.2 上仍然缺 `ctx.tools.guard`，硬拒绝层挂不上，
-见「残余风险」第 12 条。
+**范围能匹配，不等于宿主功能完整。** `0.2.1-rc.2` 及更早缺 `ctx.tools.guard`，硬拒绝层挂不上；
+`0.2.2-rc.x` 有。按版本区分，见「残余风险」第 12 条的矩阵。
 
 实测记录（宿主侧已装 `0.2.2-rc.1`）：
 
@@ -339,7 +385,8 @@ DSH 当前版本线全部是预发布（`0.2.x-rc.*`），`^0.2.0` 匹配不到�
 
 证据等级：**宿主组件级真机验证** —— 真实 `cordis Context`、真实 `dsh-system-prompt`、真实 `dsh-tools`，
 加载的是从 npm 安装的包，不是本地源码，也不是 mock。
-`dsh plugin add` 已在本机实跑通过：装 pnpm 后 `dsh plugin add dsh-cmd-guard` 成功，
+`dsh plugin` 已在本机实跑通过（宿主 `0.2.2-rc.3`）：`dsh plugin --profile web add dsh-cmd-guard` 成功，
+`--profile` 必填、`web` 为要挂载的 profile，
 注册走 `dsh.profile.bundles`（不是 `--patch`），配置树里能看到 `cmd-guard`。
 仍未覆盖：headless 启动——缺模型凭证，进程挂住，所以「启动之后真拦截」这一环没有取到证据。
 
@@ -349,6 +396,20 @@ DSH 当前版本线全部是预发布（`0.2.x-rc.*`），`^0.2.0` 匹配不到�
 零运行时依赖。无网络请求。
 
 ---
+
+## 0.3.0 改了什么
+
+这一版修的是**静默失效**，不是新功能。三处 bug 的共同点是「测试全绿、装上也像没事」：
+
+| 问题 | 修前 | 修后 |
+|---|---|---|
+| 写工具名 | `WRITE_TOOLS` 里没有 `write` / `edit`，只有自造的 `write_file` / `edit_file` | 补上宿主真实注册的 `write` / `edit`。此前 `recordWrite()` 在真机上一次都没触发，`INTERP_RECENT_WRITE` 是死代码 |
+| 路径基准 | 相对路径按 `process.cwd()` 解析，包含关系按 `workspaceRoot` 判断，两个基准可能不是同一个 | `GuardState.cwd` + 配置 `guard.cwd`，两层统一；基准缺失时判 `ask`（`unknown-cwd`）而不是猜 |
+| 远程目标 | `curl https://...`、`scp a.txt host:/tmp` 被当成本地相对路径 | URL 与 `host:path` 识别为 remote，不进入本地路径判定。修前这两条的 pass 是侥幸：换个目录就变 ask |
+
+**为什么之前测不出来。** 语料里硬编码了 `D:/AI_Assistant`。把同一棵树复制到别处，同一个二进制、同一份语料，会稳定产生 8 条失败（`I-005` `I-016` `O-009` `W4-E6` `W5-F2` `W5-F5` `W5-F7` `W6-G4`）。现在工作区从仓库位置推导，并新增一条回归：整份语料在 `os.tmpdir()` 下重跑，判定必须逐条不变。
+
+**行为变化。** `GuardState` 多了 `cwd` 字段；写工具名补全后，「写后即跑」会开始真的报 ask；remote 目标不再报 ask。所以是 minor，不是 patch。
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-cmd-guard",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Structural command parser for DeepSeek Harness. Eight layers read every command, the stated intent is checked against the action, and hard denies cannot be overridden. Fail closed by design.",
   "license": "MIT",
   "type": "module",
@@ -43,7 +43,7 @@
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {
-      "optional": false
+      "optional": true
     }
   },
   "devDependencies": {
@@ -60,6 +60,8 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test lib/test/*.test.js"
+    "pretest": "node -e \"if(!require('fs').existsSync('tsconfig.json')){console.error('dsh-cmd-guard: the test suite ships only in the repository. This install has no tsconfig.json or test/, so there is nothing to run here.');process.exit(1)}\"",
+    "test": "npm run build && node --test lib/test/*.test.js",
+    "test:isolated": "npm run build && node --test --test-isolation=none lib/test/*.test.js"
   }
 }

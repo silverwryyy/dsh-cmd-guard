@@ -12,6 +12,7 @@
         guard:
           enabled: true
         changeset:
-          # Requires danger-full-access. Off by default so a stock profile
-          # never gains write-to-self capability on install.
+          # DEPRECATED: accepted by the schema, not implemented. Turning this on
+          # only logs a warning. Left off so a stock profile never claims a
+          # write-to-self capability that does not exist.
           enabled: false
