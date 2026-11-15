@@ -6,6 +6,16 @@
  * Keeping two copies would let them drift, and a drifted copy is a bypass.
  */
 
+/**
+ * Registry hive names, in both the short and the long spelling.
+ *
+ * `reg` accepts `HKLM` and `HKEY_LOCAL_MACHINE` as the same hive, so a layer
+ * that knows one and not the other has a spelling bypass. Kept here because
+ * two layers need it and two copies drift.
+ */
+export const REGISTRY_HIVE =
+  /^(?:hk(?:lm|cr|cu|u|cc|pd)|hkey_(?:local_machine|current_user|classes_root|users|current_config|performance_data|dynamic_data))(?=[\\/]|$)/i
+
 /** Verbs that remove files. */
 export const DELETE_VERBS: ReadonlySet<string> = new Set([
   'del',

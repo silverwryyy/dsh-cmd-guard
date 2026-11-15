@@ -29,6 +29,7 @@
 import type { Finding, GuardInput, GuardState } from './types.js'
 import { effectiveTokens, plainToken, stemVerb, isHuntVerb, WRAPPERS } from './normalize.js'
 import { HUNT_VERBS, SHELL_KEYWORDS } from './verbs.js'
+import { inspectTargets, type ScopeContext } from './scope.js'
 
 /**
  * Heads whose remaining tokens are data and which cannot execute a payload.
@@ -113,28 +114,11 @@ const EXEMPT: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Where a command is pointed, as opposed to what it is called.
- *
- * Anchored on purpose: an argument that merely mentions a system path inside a
- * sentence ("fix /etc/passwd handling") must not match, or every commit message
- * that names a file becomes an ask.
+ * Where a command is pointed is not decided here. scope.ts answers it by
+ * resolving each token to a comparison key (path.ts) and testing containment
+ * against structural roots, so a spelling, an expansion or a depth that the
+ * old anchored table could not see is the same question as any other.
  */
-const SENSITIVE_TARGET: readonly RegExp[] = [
-  /^[a-z]:\\windows(?:\\|$)/i,
-  /^[a-z]:\\program files(?: \(x86\))?(?:\\|$)/i,
-  /^[a-z]:\\programdata(?:\\|$)/i,
-  /^[a-z]:\\users\\?$/i,
-  /^[a-z]:\\?$/i,
-  // `-v C:\:C:\` names the drive root as the volume source.
-  /^[a-z]:\\:/i,
-  /^\/{1,3}$/,
-  // `docker run -v /:/host` mounts the machine into the container: the colon
-  // splits source from target, so the root is the part before it.
-  /^\/:/,
-  /^\/(?:etc|bin|sbin|boot|usr|var|lib|lib64|root|home|opt|dev)(?:\/|$)/i,
-  /^hk(?:lm|cr|u|cc)\\/i,
-  /^\\\\\?\\/,
-]
 
 /** Files whose disclosure or loss is not recoverable by a later step. */
 const CREDENTIAL_TARGET =
@@ -194,10 +178,6 @@ const SCRIPT_HOSTS: ReadonlySet<string> = new Set([
   'regasm',
   'regsvcs',
 ])
-
-/** Flags whose value is a destination, not an option. */
-const DEST_FLAG =
-  /^(?:-C|-d|--directory|--prefix|--root|--target-dir|--output-dir|-v|--volume|--mount|-o|--output|--output-file|-O|--out)(?:=|$)/
 
 /**
  * Flags whose value is a program to run rather than a file to read.
@@ -273,14 +253,7 @@ function valueOf(token: string): string {
   return token.replace(/^-{1,2}[A-Za-z][A-Za-z0-9_-]*=/, '')
 }
 
-function isSensitive(token: string): boolean {
-  const v = valueOf(token)
-  if (v.length === 0) return false
-  if (CREDENTIAL_TARGET.test(v)) return true
-  return SENSITIVE_TARGET.some((re) => re.test(v))
-}
-
-export function check(input: GuardInput, _state: GuardState): Finding | null {
+export function check(input: GuardInput, state: GuardState): Finding | null {
   const raw = effectiveTokens(input.cmd)
   const first = raw[0]
   if (first === undefined) return null
@@ -305,7 +278,31 @@ export function check(input: GuardInput, _state: GuardState): Finding | null {
     }
   }
 
-  if (EXEMPT.has(head)) return null
+  // An exempt head is a claim about the head, not about the target.
+  //
+  // The rules layer owns the policy heads, but it owns them by name and by a
+  // table of paths, and `Remove-Item -Recurse C:\Users\me` matched neither:
+  // one flag, no prompt, a home directory gone. So a head is allowed to stop
+  // here only when nothing about the target makes the answer matter.
+  //
+  // A read-only head is exempt outright. Reading a system file is the
+  // disclosure rule's business, and that rule ran above; asking `cat
+  // /etc/hosts` would be noise on the ordinary case to cover nothing.
+  if (EXEMPT.has(head)) {
+    const exemptTokens = raw.map(plainToken).filter((t) => t.length > 0 && !/\s/.test(t))
+    const exemptReport = inspectTargets(exemptTokens, { workspaceRoot: state.workspaceRoot })
+    // The gate is the flag, not the head's class and not the target alone.
+    // `reg` is in HUNT_VERBS, so a class test cannot tell `reg query
+    // HKLM\SOFTWARE` from `reg delete HKLM\... /f`; the flag can, and the
+    // flag is also what makes a target scan worth running. Without one, a
+    // command can name a system location and do nothing that a rename or a
+    // reinstall would not fix.
+    const matters =
+      exemptReport.targets.some((t) => t.hasGlob) ||
+      exemptTokens.some((t) => RECURSIVE_FLAG.some((re) => re.test(t))) ||
+      exemptTokens.some((t) => FORCE_FLAG.some((re) => re.test(t)))
+    if (DATA_TAIL.has(head) || !matters) return null
+  }
 
   // A token that came out of quotes keeps its spaces; one that did not is a
   // word the shell would pass as a single argument. Sentences are not targets.
@@ -314,36 +311,57 @@ export function check(input: GuardInput, _state: GuardState): Finding | null {
 
   const signals: string[] = []
 
-  const target = tokens.find(isSensitive)
-  if (target !== undefined) {
-    signals.push(`points at "${target}", a system, volume or credential location`)
+  // Where the command is pointed, read as a location rather than a string.
+  const scopeContext: ScopeContext = { workspaceRoot: state.workspaceRoot }
+  const report = inspectTargets(tokens, scopeContext)
+
+  for (const target of report.targets) {
+    const named = target.display ?? target.token
+    if (target.level === 'root') {
+      signals.push(`names "${named}", a volume, share or device root`)
+    } else if (target.level === 'sensitive') {
+      signals.push(`points at "${named}", in ${target.zone ?? 'a system location'}`)
+    } else if (target.level === 'ancestor') {
+      signals.push(`names "${named}", which contains the workspace`)
+    }
   }
 
   const recursive = tokens.some((t) => RECURSIVE_FLAG.some((re) => re.test(t)))
   const force = tokens.some((t) => FORCE_FLAG.some((re) => re.test(t)))
-  if (recursive && force) signals.push('carries recursive and force flags together')
+
+  // A target that cannot be read statically is not a signal on its own: it is
+  // a signal once a flag makes the answer matter. `gci $env:APPDATA` names a
+  // location and does nothing to it.
+  const unresolved = report.targets.filter((t) => t.level === 'unknown')
+  const wildcard = report.targets.some((t) => t.hasGlob)
+  if (unresolved.length > 0 && (recursive || force || wildcard)) {
+    signals.push(
+      `names "${unresolved[0]?.token ?? '?'}", whose target cannot be resolved statically`,
+    )
+  }
+
+  // Recursion into a location whose loss is not recoverable. The force flag
+  // used to be required alongside it, which left `Remove-Item -Recurse
+  // C:\Users\me` clean: one flag, no prompt, a home directory gone.
+  const unrecoverable = report.targets.some(
+    (t) => t.level === 'sensitive' || t.level === 'root' || t.level === 'ancestor',
+  )
+  if (recursive && unrecoverable) {
+    signals.push('recurses into a location whose loss cannot be undone')
+  }
+
+  // Recursive and force together: the shape of an override. Suppressed only
+  // when every location the command names is a root that a normal command
+  // rebuilds - the whitelist's single subtraction, and the reason it may only
+  // contain regenerable roots.
+  if (recursive && force && !report.regenerableOnly) {
+    signals.push('carries recursive and force flags together')
+  }
 
   const inlineAt = tokens.findIndex((t) => INLINE_FLAG.some((re) => re.test(t)))
   if (inlineAt >= 0 && tokens.length > inlineAt + 1) {
     signals.push('takes code as an argument rather than a file')
   }
-
-  // A destination flag: the target is the flag's value, not any token.
-  // `tar -xf a.tar -C /etc` and `docker run -v /:/host` were both passing,
-  // because no token in them looks like a path on its own.
-  for (let i = 0; i < tokens.length; i += 1) {
-    const flag = tokens[i] ?? ''
-    const m = DEST_FLAG.exec(flag)
-    if (m === null) continue
-    const inline = flag.slice(m[0].length)
-    const value = inline.length > 0 ? inline : (tokens[i + 1] ?? '')
-    const cleaned = valueOf(plainToken(value))
-    if (cleaned.length > 0 && isSensitive(cleaned)) {
-      signals.push(`writes to "${cleaned}", a location outside the workspace`)
-      break
-    }
-  }
-
 
   if (tokens.some((t) => DOWNLOAD_FLAG.test(t))) {
     signals.push('takes a download or an encoded payload')

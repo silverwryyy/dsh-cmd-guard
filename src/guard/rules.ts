@@ -41,7 +41,13 @@ const DRIVE_ROOT = /^[a-z]:\\?\*?$/i
 const POSIX_ROOT = /^\/{1,3}(?:\*|\.)?$/
 
 /** Delete and mutation vocabularies live in verbs.ts, shared with normalization. */
-const MACHINE_HIVE = /^hk(?:lm|cr|u|cc)\\/i
+/**
+ * Machine-wide hives. HKCU is absent on purpose: a user's own hive under a
+ * scoped delete is an `ask`, not an unrecoverable deny. See REGISTRY_HIVE in
+ * verbs.ts for the whole-namespace form.
+ */
+const MACHINE_HIVE =
+  /^(?:hk(?:lm|cr|u|cc)|hkey_(?:local_machine|classes_root|users|current_config))(?=[\\/]|$)/i
 
 /** Files whose replacement or disclosure is not recoverable afterwards. */
 const SECRET_FILE = /(?:^|[\\/])(?:shadow|sudoers|gshadow|id_rsa|id_ed25519|ntds\.dit)$/i
