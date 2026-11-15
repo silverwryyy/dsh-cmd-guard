@@ -1,0 +1,134 @@
+{
+  "schema": 3,
+  "description": "Batch 9: flag grammars. A short POSIX cluster is matched case-sensitively and a PowerShell parameter is matched as a whole word; -r names code only for a runtime head. The measured defect: /^-[a-z]*r[a-z]*$/i read 'this argument contains the letter r' as 'this is recursive', so every PowerShell parameter word was a recursive flag and -Force was recursive and force at once.",
+  "cases": [
+    {
+      "id": "W10-A1",
+      "layer": "capability",
+      "cmd": "Copy-Item -Force a.txt b.txt",
+      "expect": "pass",
+      "note": "force alone is not a signal",
+      "why": "Copy the built artifact over the staging copy"
+    },
+    {
+      "id": "W10-A2",
+      "layer": "capability",
+      "cmd": "New-Item -ItemType Directory -Force -Path dist",
+      "expect": "pass",
+      "note": "neither -ItemType nor -Force is recursive",
+      "why": "Create the output directory the build writes into"
+    },
+    {
+      "id": "W10-A3",
+      "layer": "capability",
+      "cmd": "Remove-Item -Force .\\a.txt",
+      "expect": "pass",
+      "note": "one file, no recursion",
+      "why": "Delete the scratch file left by the previous run"
+    },
+    {
+      "id": "W10-A4",
+      "layer": "capability",
+      "cmd": "Get-ChildItem -ErrorAction SilentlyContinue .",
+      "expect": "pass",
+      "note": "-ErrorAction contains the letter r and is not a recursive flag",
+      "why": "List the workspace root to see what the build produced"
+    },
+    {
+      "id": "W10-A5",
+      "layer": "capability",
+      "cmd": "cp -r src dst",
+      "expect": "pass",
+      "note": "-r is the recursive flag, not a module to load",
+      "why": "Copy the source tree into the staging directory"
+    },
+    {
+      "id": "W10-A6",
+      "layer": "capability",
+      "cmd": "cp -ru src dst",
+      "expect": "pass",
+      "note": "cluster with r and u, both target flags",
+      "why": "Copy only the files that changed since the last staging run"
+    },
+    {
+      "id": "W10-B1",
+      "layer": "capability",
+      "cmd": "node -r ./hook.js app.js",
+      "expect": "ask",
+      "note": "for a runtime head -r does name code",
+      "why": "Load the instrumentation hook before the app starts"
+    },
+    {
+      "id": "W10-B2",
+      "layer": "rules",
+      "cmd": "cp -rf src D:\\Windows\\System32",
+      "expect": "ask",
+      "note": "narrowing the flag reading did not narrow the target reading",
+      "why": "Copy the plugin dll beside the other system libraries"
+    },
+    {
+      "id": "W10-B3",
+      "layer": "capability",
+      "cmd": "Remove-Item -Recurse -Force .\\build",
+      "expect": "ask",
+      "note": "two real flags on a worktree path still ask",
+      "why": "Clear the build output before a clean rebuild"
+    },
+    {
+      "id": "W10-B4",
+      "layer": "capability",
+      "cmd": "Remove-Item -Recurse C:\\Users\\me",
+      "expect": "ask",
+      "note": "the single-flag case the old force requirement let through",
+      "why": "Remove the old profile directory left by the reinstall"
+    },
+    {
+      "id": "W10-B5",
+      "layer": "rules",
+      "cmd": "Remove-Item -Force C:\\Windows\\System32\\x.dll",
+      "expect": "ask",
+      "note": "no longer denied as recursion; denied-by-name was the false positive. A system-path write is still an ask",
+      "why": "Remove the stale dll from the system directory"
+    },
+    {
+      "id": "W10-B6",
+      "layer": "why",
+      "cmd": "mv -f a.txt b.txt",
+      "expect": "ask",
+      "note": "the force flag adds nothing here: the ask is the missing reason for a state change",
+      "note_only": true
+    },
+    {
+      "id": "W10-B7",
+      "layer": "capability",
+      "cmd": "Copy-Item -Recurse -Force D:\\Windows\\System32 C:\\temp\\x",
+      "expect": "ask",
+      "note": "recursion and force as the tool spells them",
+      "why": "Back up the system libraries into a temp folder"
+    },
+    {
+      "id": "W10-B8",
+      "layer": "capability",
+      "cmd": "del /f /s /q D:\\temp\\out",
+      "expect": "ask",
+      "note": "/s and /f are the real Windows pair",
+      "why": "Remove the temp output tree from the last build"
+    },
+    {
+      "id": "W10-C1",
+      "layer": "rules",
+      "cmd": "Remove-Item -Recurse -Force C:\\Windows",
+      "expect": "deny",
+      "note": "the hard rule is untouched by the flag fix",
+      "why": "Clear the system directory to free space"
+    },
+    {
+      "id": "W10-C2",
+      "layer": "rules",
+      "cmd": "rd /s /q C:\\Windows",
+      "expect": "deny",
+      "note": "cmd spelling of the same act",
+      "why": "Clear the system directory to free space"
+    }
+  ]
+}

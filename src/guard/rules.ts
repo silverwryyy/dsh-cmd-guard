@@ -12,7 +12,7 @@
  * `eval "rm -rf /"` all reached the end of the pipeline untouched.
  */
 import type { Finding, GuardInput, GuardState } from './types.js'
-import { effectiveTokens, plainToken, stemVerb } from './normalize.js'
+import { effectiveTokens, isRecursiveFlag, plainToken, stemVerb } from './normalize.js'
 import { splitSegments } from './lexical.js'
 import { DELETE_VERBS, MUTATION_VERBS } from './verbs.js'
 
@@ -189,15 +189,15 @@ function isRootPath(token: string): boolean {
   return DRIVE_ROOT.test(p) || POSIX_ROOT.test(p)
 }
 
-/** `-r`, `-rf`, `-R`, `--recursive`, `/s`, `-Recurse`. */
+/**
+ * `-r`, `-rf`, `-R`, `--recursive`, `/s`, `-Recurse`.
+ *
+ * Delegated rather than restated: the capability layer tested the same regex,
+ * and its copy widened to "contains the letter r" is what made
+ * `Remove-Item -Force a.txt` look recursive.
+ */
 function isRecursive(tokens: readonly string[]): boolean {
-  return tokens.some(
-    (t) =>
-      /^\/s$/i.test(t) ||
-      /^-recurse$/i.test(t) ||
-      /^--recursive$/i.test(t) ||
-      /^-[a-z]*r[a-z]*$/i.test(t),
-  )
+  return tokens.some((t) => isRecursiveFlag(plainToken(t)))
 }
 
 function lower(tokens: readonly string[]): string[] {

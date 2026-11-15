@@ -27,7 +27,15 @@
  * unrecoverable.
  */
 import type { Finding, GuardInput, GuardState } from './types.js'
-import { effectiveTokens, plainToken, stemVerb, isHuntVerb, WRAPPERS } from './normalize.js'
+import {
+  effectiveTokens,
+  isForceFlag,
+  isHuntVerb,
+  isRecursiveFlag,
+  plainToken,
+  stemVerb,
+  WRAPPERS,
+} from './normalize.js'
 import { HUNT_VERBS, SHELL_KEYWORDS } from './verbs.js'
 import { inspectTargets, type ScopeContext } from './scope.js'
 import { baseOf } from './path.js'
@@ -129,20 +137,9 @@ const CREDENTIAL_TARGET =
 const SECRET_STORE =
   /(?:^|[\\/])config[\\/](?:sam|system|security|default|ntuser\.dat)$/i
 
-/** Bulk-mutation flag families. Common alone, not together. */
-const RECURSIVE_FLAG: readonly RegExp[] = [
-  /^-[a-z]*r[a-z]*$/i,
-  /^--recursive(?:=.*)?$/i,
-  /^\/s$/i,
-  /^-recurse$/i,
-]
-
-const FORCE_FLAG: readonly RegExp[] = [
-  /^-[a-z]*f[a-z]*$/i,
-  /^--force(?:=.*)?$/i,
-  /^-(?:fo|force)$/i,
-  /^\/[fqy]$/i,
-]
+// Bulk-mutation flags: {common alone, not together}. The spelling lives in
+// normalize.ts so this layer and the rules layer cannot drift apart — they
+// already had, on the same regex, one of them behind a deny.
 
 /** Subcommands that remove the resource they name. */
 const REMOVE_SUBCOMMAND =
@@ -240,11 +237,38 @@ const HOST_STATE: ReadonlyMap<string, RegExp> = new Map([
 /** Flags whose next argument is code, not a file. */
 const INLINE_FLAG: readonly RegExp[] = [
   /^-[ce]$/i,
-  /^-r$/i,
   /^--eval(?:=.*)?$/i,
   /^-(?:command|encodedcommand|exec|execdir|eval)$/i,
   /^\/c$/i,
 ]
+
+/**
+ * `-r` is two flags spelled alike. For a language runtime it names a module or
+ * library loaded before the program runs - `node -r ./hook.js`, `php -r 'code'`
+ * - and that is code passed as an argument. For every other head it is the
+ * POSIX recursive flag, `cp -r src dst`, which is a target flag and is read by
+ * isRecursiveFlag instead.
+ *
+ * The head decides which, so the generic flag list above cannot. A whitelist is
+ * used rather than a blacklist because the two ways of being wrong do not cost
+ * the same: guessing "code" on a copy is one false ask, guessing "target" on an
+ * inline payload is one silent pass.
+ */
+const CODE_REQUIRE_HEADS: ReadonlySet<string> = new Set([
+  'node',
+  'nodejs',
+  'bun',
+  'deno',
+  'php',
+  'php7',
+  'php8',
+  'perl',
+  'perl5',
+  'ruby',
+])
+
+/** The short flag whose value only a runtime's head makes into code. */
+const CODE_REQUIRE_FLAG = /^-r$/
 
 /**
  * Strip an option's leading `--name=` so the value is compared, not the flag.
@@ -304,8 +328,7 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
     // reinstall would not fix.
     const matters =
       exemptReport.targets.some((t) => t.hasGlob) ||
-      exemptTokens.some((t) => RECURSIVE_FLAG.some((re) => re.test(t))) ||
-      exemptTokens.some((t) => FORCE_FLAG.some((re) => re.test(t)))
+      exemptTokens.some(isRecursiveFlag) || exemptTokens.some(isForceFlag)
     if (DATA_TAIL.has(head) || !matters) return null
   }
 
@@ -336,8 +359,8 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
     }
   }
 
-  const recursive = tokens.some((t) => RECURSIVE_FLAG.some((re) => re.test(t)))
-  const force = tokens.some((t) => FORCE_FLAG.some((re) => re.test(t)))
+  const recursive = tokens.some(isRecursiveFlag)
+  const force = tokens.some(isForceFlag)
 
   // A target that cannot be read statically is not a signal on its own: it is
   // a signal once a flag makes the answer matter. `gci $env:APPDATA` names a
@@ -375,7 +398,11 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
     signals.push('carries recursive and force flags together')
   }
 
-  const inlineAt = tokens.findIndex((t) => INLINE_FLAG.some((re) => re.test(t)))
+  const inlineAt = tokens.findIndex(
+    (t) =>
+      INLINE_FLAG.some((re) => re.test(t)) ||
+      (CODE_REQUIRE_HEADS.has(head) && CODE_REQUIRE_FLAG.test(t)),
+  )
   if (inlineAt >= 0 && tokens.length > inlineAt + 1) {
     signals.push('takes code as an argument rather than a file')
   }

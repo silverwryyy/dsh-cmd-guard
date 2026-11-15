@@ -274,3 +274,51 @@ export function hasUnsafeRedirectTarget(cmd: string): boolean {
 
   return false
 }
+
+
+/**
+ * Recursive and force flags, spelled once for every layer.
+ *
+ * The short forms are POSIX clusters: lowercase letters, case-sensitive, and
+ * any subset may be present, so `-r`, `-rf` and `-vr` all count. The long
+ * forms are words, and PowerShell spells its own as PascalCase parameters.
+ *
+ * The pattern this replaces was a single /i cluster test, `/^-[a-z]*r[a-z]*$/i`,
+ * which does not read a flag — it reads "this argument happens to contain the
+ * letter r somewhere". Every PowerShell parameter word therefore matched:
+ *
+ *   Copy-Item -Force a.txt b.txt        asked as "recursive and force"
+ *   New-Item -ItemType Directory -Force -Path dist   same
+ *   Get-ChildItem -ErrorAction SilentlyContinue      read as recursive
+ *
+ * The fix is to stop treating two different grammars as one: a lowercase
+ * cluster is matched case-sensitively, and the PowerShell parameter is matched
+ * as the whole word it is.
+ */
+const RECURSIVE_CLUSTER = /^-[a-z]*r[a-z]*$/
+const RECURSIVE_CLUSTER_UPPER = /^-[A-Za-z]*R[A-Za-z]*$/
+
+/** Is this token spelled as a recursive flag by any shell this guard reads? */
+export function isRecursiveFlag(token: string): boolean {
+  return (
+    RECURSIVE_CLUSTER.test(token) ||
+    RECURSIVE_CLUSTER_UPPER.test(token) ||
+    /^--recursive(?:=.*)?$/.test(token) ||
+    /^-recurse(?::.*)?$/i.test(token) ||
+    /^\/s$/i.test(token)
+  )
+}
+
+const FORCE_CLUSTER = /^-[a-z]*f[a-z]*$/
+const FORCE_CLUSTER_UPPER = /^-[A-Za-z]*F[A-Za-z]*$/
+
+/** Is this token spelled as a force flag by any shell this guard reads? */
+export function isForceFlag(token: string): boolean {
+  return (
+    FORCE_CLUSTER.test(token) ||
+    FORCE_CLUSTER_UPPER.test(token) ||
+    /^--force(?:=.*)?$/.test(token) ||
+    /^-(?:fo|force)(?::.*)?$/i.test(token) ||
+    /^\/[fqy]$/i.test(token)
+  )
+}
