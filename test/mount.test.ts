@@ -8,6 +8,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import {
   isPreToolDecision,
   toDecision,
@@ -19,7 +20,12 @@ import { verify } from '../src/guard/verify.js'
 import { apply, isFailedResult } from '../src/index.js'
 import type { GuardInput, GuardState } from '../src/guard/types.js'
 
-const STATE: GuardState = { workspaceRoot: 'D:/AI_Assistant' }
+/** Derived from this file, not from one machine's absolute path. */
+const WORKSPACE = (
+  process.env['CMD_GUARD_WORKSPACE'] ?? fileURLToPath(new URL('../../', import.meta.url))
+).replace(/\\/g, '/')
+
+const STATE: GuardState = { workspaceRoot: WORKSPACE, cwd: WORKSPACE }
 
 test('maps the shipped shape: pwsh + command + description', () => {
   const mapping = toGuardInput({
@@ -83,7 +89,7 @@ test('payload data is not a command: write_file with prose mentioning a delete',
   const mapping = toGuardInput({
     name: 'write_file',
     arguments: {
-      filepath: 'D:/AI_Assistant/README.md',
+      filepath: WORKSPACE + '/README.md',
       content: 'Never run del /s /q D:\\ on a system root; this line is documentation.',
     },
   })
@@ -253,11 +259,13 @@ function makeCtx(options: { withGuard: boolean }) {
   const warnings: string[] = []
   const guards: Array<(exec: unknown) => string | undefined> = []
   const events: string[] = []
+  const handlers: Record<string, Array<(...args: any[]) => unknown>> = {}
 
   const ctx: Record<string, unknown> = {
     logger: { warn: (message: string) => warnings.push(message) },
-    on: (event: string) => {
+    on: (event: string, fn: (...args: any[]) => unknown) => {
       events.push(event)
+      handlers[event] = [...(handlers[event] ?? []), fn]
       return () => {}
     },
   }
@@ -271,12 +279,58 @@ function makeCtx(options: { withGuard: boolean }) {
     }
   }
 
-  return { ctx, warnings, guards, events }
+  return { ctx, warnings, guards, events, handlers }
 }
+
+/**
+ * The ledger's tool names must be the names the host registers.
+ *
+ * `dsh-tool-fs` registers `write` and `edit`. Neither was in the set, so
+ * recordWrite() never fired on a real session and INTERP_RECENT_WRITE was dead
+ * code - while the old tests passed, because they asserted `write_file` and
+ * `edit_file` against a set that listed exactly those invented names.
+ */
+test('the write ledger keys on the tool names the host actually registers', async () => {
+  const { ctx, handlers } = makeCtx({ withGuard: true })
+  apply(ctx, { guard: { workspaceRoot: WORKSPACE, cwd: WORKSPACE } })
+
+  const post = handlers['tools/post-execute']?.[0]
+  const pre = handlers['tools/pre-execute']?.[0]
+  assert.ok(typeof post === 'function', 'no post-execute listener installed')
+  assert.ok(typeof pre === 'function', 'no pre-execute listener installed')
+  if (post === undefined || pre === undefined) return
+
+  const next = async (): Promise<unknown> => ({ ok: true })
+  const run = { name: 'bash', arguments: { command: 'python scripts/fresh.py', description: 'Run the script that was just written.' } }
+
+  // Control: nothing written yet, so the TOCTOU rule has no ledger entry.
+  // `pre` defers by awaiting `next()`, so a pass is that result rather than
+  // undefined. What matters is that it is not a decision.
+  const control = (await pre(run, next)) as { kind?: string } | undefined
+  assert.notEqual(control?.kind, 'ask', 'an unwritten path must not trigger the ledger rule')
+
+  await post({ name: 'write', arguments: { file_path: 'scripts/fresh.py', content: 'print(1)' } }, { ok: true }, next)
+  const decision = (await pre(run, next)) as { kind?: string } | undefined
+  assert.equal(decision?.kind, 'ask', 'write-then-run must be reported after a host write')
+
+  // `edit` is the other registered name, and it feeds the same ledger.
+  const { ctx: ctx2, handlers: h2 } = makeCtx({ withGuard: true })
+  apply(ctx2, { guard: { workspaceRoot: WORKSPACE, cwd: WORKSPACE } })
+  await h2['tools/post-execute']?.[0]?.(
+    { name: 'edit', arguments: { file_path: 'scripts/twice.py', old_string: 'a', new_string: 'b' } },
+    { ok: true },
+    next,
+  )
+  const edited = (await h2['tools/pre-execute']?.[0]?.(
+    { name: 'bash', arguments: { command: 'python scripts/twice.py', description: 'Re-run the edited script.' } },
+    next,
+  )) as { kind?: string } | undefined
+  assert.equal(edited?.kind, 'ask', 'edit-then-run must be reported too')
+})
 
 test('hard deny mounts when the host offers ctx.tools.guard, and only ever denies', () => {
   const { ctx, warnings, guards } = makeCtx({ withGuard: true })
-  apply(ctx, { guard: { workspaceRoot: 'D:/AI_Assistant' } })
+  apply(ctx, { guard: { workspaceRoot: WORKSPACE, cwd: WORKSPACE } })
 
   assert.equal(guards.length, 1, 'the hard-deny mount did not register')
   assert.equal(warnings.length, 0)
@@ -285,12 +339,12 @@ test('hard deny mounts when the host offers ctx.tools.guard, and only ever denie
   assert.ok(guard, 'guards[0] must exist after the length assertion')
   assert.equal(typeof guard({ name: 'pwsh', arguments: { command: 'rd /s /q C:\\' } }), 'string')
   assert.equal(guard({ name: 'pwsh', arguments: { command: 'git status' } }), undefined)
-  assert.equal(guard({ name: 'read_file', arguments: { filepath: 'D:/AI_Assistant/a.txt' } }), undefined)
+  assert.equal(guard({ name: 'read_file', arguments: { filepath: WORKSPACE + '/a.txt' } }), undefined)
 })
 
 test('a host without ctx.tools.guard warns instead of pretending to guard', () => {
   const { ctx, warnings, events } = makeCtx({ withGuard: false })
-  apply(ctx, { guard: { workspaceRoot: 'D:/AI_Assistant' } })
+  apply(ctx, { guard: { workspaceRoot: WORKSPACE, cwd: WORKSPACE } })
 
   assert.equal(warnings.length, 1)
   const warning = warnings[0]

@@ -212,7 +212,9 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
     }
   }
 
-  const workspaceRoot = state.workspaceRoot ?? process.cwd()
+  // Same order as every other layer: a stated cwd outranks the workspace root,
+  // and the process cwd is the last resort rather than the default.
+  const workspaceRoot = state.workspaceRoot ?? state.cwd ?? process.cwd()
 
   if (head === 'pip' || head === 'pip3' || head === 'pipx') {
     const isInstall = lowered.includes('install')

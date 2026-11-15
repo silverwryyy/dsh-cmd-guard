@@ -341,6 +341,29 @@ function fromAbsolute(text: string): ResolvedPath {
 }
 
 /**
+ * The base a relative token is resolved against, and whether the caller said so.
+ *
+ * `stated` is not decoration. A verdict that rests on an assumed base is a
+ * verdict that changes when the hosting process is started from somewhere
+ * else, and the message an operator sees has to be able to say that out loud.
+ * The order is deliberate: an explicit `cwd` first, then the workspace root
+ * (an explicit statement about this project even when it is not a statement
+ * about the shell), then - only when nothing was said - the process cwd, which
+ * is what the shell child would inherit anyway.
+ */
+export interface PathBase {
+  readonly cwd: string | undefined
+  readonly stated: boolean
+}
+
+export function baseOf(cwd: string | undefined, workspaceRoot: string | undefined): PathBase {
+  if (cwd !== undefined && cwd.length > 0) return { cwd, stated: true }
+  if (workspaceRoot !== undefined && workspaceRoot.length > 0) return { cwd: workspaceRoot, stated: false }
+  const processCwd = typeof process !== 'undefined' ? process.cwd() : undefined
+  return { cwd: processCwd, stated: false }
+}
+
+/**
  * Turn one token into either a comparison key or `dynamic`.
  *
  * Order matters. The `\\?\` prefix is stripped before anything reads the path,

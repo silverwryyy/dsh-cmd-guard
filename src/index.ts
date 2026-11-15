@@ -40,8 +40,17 @@ export const inject = ['tools'] as const
 export interface CmdGuardConfig {
   guard?: {
     enabled?: boolean
-    /** Absolute root used for path provenance. Defaults to the process cwd. */
+    /** Absolute root used for path provenance. Defaults to `cwd`. */
     workspaceRoot?: string
+    /**
+     * Absolute directory that relative paths are resolved against.
+     *
+     * Defaults to `workspaceRoot`, then to the process cwd. Set it when a
+     * session runs somewhere other than the directory the host was started in.
+     * The resolved pair is logged once at mount, so an unexpected ask can be
+     * traced back to a base instead of guessed at.
+     */
+    cwd?: string
     /**
      * Track files written earlier in the session so write-then-run is not
      * judged as two unrelated calls. On by default: the TOCTOU hole is wide
@@ -50,14 +59,19 @@ export interface CmdGuardConfig {
     recordWrites?: boolean
   }
   changeset?: {
-    /** Accepted by the config, not implemented. Enabling it logs a warning. */
+    /**
+     * @deprecated Accepted by the schema, never implemented. Enabling it only
+     * logs a warning and changes nothing. Kept so an existing config does not
+     * fail to parse, not because the feature exists.
+     */
     enabled?: boolean
+    /** @deprecated Same as `enabled`: read, ignored, warning logged. */
     ledgerDir?: string
   }
 }
 
 interface ResolvedConfig {
-  guard: { enabled: boolean; workspaceRoot: string; recordWrites: boolean }
+  guard: { enabled: boolean; workspaceRoot: string; cwd: string; recordWrites: boolean }
   changeset: { enabled: boolean; ledgerDir: string | undefined }
 }
 
@@ -66,8 +80,20 @@ const DEFAULTS = {
   changeset: { enabled: false },
 } as const
 
-/** Tools whose written path feeds the TOCTOU rule. */
+/**
+ * Tools whose written path feeds the TOCTOU rule.
+ *
+ * The first two are the names the host actually registers: `dsh-tool-fs`
+ * declares `write` and `edit`, and `apply_patch` is the third. The rest are
+ * spellings other agents use, kept because a write recorded under an unknown
+ * name costs nothing while a missed one leaves the rule dead - which is what
+ * happened here. The ledger stayed empty on every real session, so
+ * INTERP_RECENT_WRITE never fired, and the tests passed because they asserted
+ * the invented names against themselves.
+ */
 const WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'write',
+  'edit',
   'write_file',
   'writefile',
   'create_file',
@@ -83,11 +109,16 @@ const PATH_KEYS: ReadonlyArray<string> = ['filepath', 'file_path', 'path', 'file
 const MAX_RECENT_WRITES = 256
 
 function resolve(raw: CmdGuardConfig): ResolvedConfig {
+  // One base, two names. When neither is configured both fall back to the
+  // process cwd, which is what the shell child inherits anyway; when one is,
+  // the other follows it rather than silently disagreeing with it.
+  const cwd = raw.guard?.cwd ?? raw.guard?.workspaceRoot ?? process.cwd()
   return {
     guard: {
       ...DEFAULTS.guard,
       ...(raw.guard ?? {}),
-      workspaceRoot: raw.guard?.workspaceRoot ?? process.cwd(),
+      workspaceRoot: raw.guard?.workspaceRoot ?? cwd,
+      cwd,
     },
     changeset: {
       enabled: raw.changeset?.enabled ?? DEFAULTS.changeset.enabled,
@@ -108,6 +139,23 @@ function warn(ctx: any, message: string): void {
     return
   }
   console.warn(`[dsh-cmd-guard] ${message}`)
+}
+
+/**
+ * Informational line at mount, never a warning.
+ *
+ * A guard whose path base is invisible produces unexplainable asks: the
+ * operator cannot tell "this is outside the project" from "the guard is
+ * looking at the wrong directory". One line naming both bases is the whole
+ * fix, and it goes to info because an unstated base is a default, not a fault.
+ */
+function note(ctx: any, message: string): void {
+  const logger = ctx?.logger
+  if (typeof logger?.info === 'function') {
+    logger.info(message)
+    return
+  }
+  if (typeof logger?.debug === 'function') logger.debug(message)
 }
 
 function asExecution(value: unknown): ExecutionLike {
@@ -161,7 +209,16 @@ export function apply(ctx: any, raw: CmdGuardConfig = {}): void {
 
 function installGuard(ctx: any, cfg: ResolvedConfig): void {
   const recentWrites: string[] = []
-  const state = (): GuardState => ({ workspaceRoot: cfg.guard.workspaceRoot, recentWrites })
+  const state = (): GuardState => ({
+    workspaceRoot: cfg.guard.workspaceRoot,
+    cwd: cfg.guard.cwd,
+    recentWrites,
+  })
+
+  note(
+    ctx,
+    `dsh-cmd-guard: relative paths resolve against ${cfg.guard.cwd}; workspace containment is judged against ${cfg.guard.workspaceRoot}. If a session runs elsewhere, set guard.cwd and guard.workspaceRoot.`,
+  )
 
   const dispose = (off: unknown): void => {
     if (typeof off === 'function') ctx.on('dispose', off)

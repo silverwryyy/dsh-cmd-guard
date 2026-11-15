@@ -13,10 +13,40 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import { verify } from '../src/guard/verify.js'
 import type { GuardInput, GuardState } from '../src/guard/types.js'
 
-const WORKSPACE = 'D:/AI_Assistant'
+/**
+ * The corpus is written against "the workspace this repository sits in", not
+ * against one machine's absolute path.
+ *
+ * It used to be the literal `D:/AI_Assistant`, and the same corpus then
+ * produced eight failures in a clone under Documents: the relative tokens were
+ * resolved against the process cwd while containment was tested against a root
+ * from the corpus. Two bases, one command, two answers.
+ *
+ * The base is now stated rather than inherited, and the root is derived from
+ * this file's location. `CMD_GUARD_WORKSPACE` overrides it for the odd case of
+ * running the suite against a tree somewhere else.
+ */
+const WORKSPACE = (
+  process.env['CMD_GUARD_WORKSPACE'] ?? fileURLToPath(new URL('../../', import.meta.url))
+).replace(/\\/g, '/')
+
+/**
+ * Both bases, stated. `cwd` is not inherited from the process on purpose: an
+ * assertion that changes when the test is started from a different directory
+ * is not an assertion.
+ */
+const STATE: GuardState = { workspaceRoot: WORKSPACE, cwd: WORKSPACE }
+
+/** Corpus cases that need a populated write ledger carry it here. */
+function stateFor(c: Case): GuardState {
+  return c.requires_state === 'recent_write'
+    ? { ...STATE, recentWrites: ['scripts/fresh.py'] }
+    : STATE
+}
 const CORPUS_DIR = fileURLToPath(new URL('../../test/', import.meta.url))
 
 interface Case {
@@ -67,14 +97,7 @@ test('corpus loaded', () => {
 
 for (const c of cases) {
   test(`${c.id} ${c.expect}: ${c.cmd}`, () => {
-    const state: GuardState = {
-      workspaceRoot: WORKSPACE,
-      ...(c.requires_state === 'recent_write'
-        ? { recentWrites: ['scripts/fresh.py'] }
-        : {}),
-    }
-
-    const result = verify(toInput(c), state)
+    const result = verify(toInput(c), stateFor(c))
 
     assert.equal(
       result.verdict,
@@ -83,6 +106,32 @@ for (const c of cases) {
     )
   })
 }
+
+/**
+ * The assertion the eight cross-cwd failures were missing.
+ *
+ * `process.cwd()` used to be an input to the verdict through `cwdOf`'s
+ * fallback, so the same corpus decided differently depending on where the
+ * repository sat. Both bases are stated in `state` now, which makes the
+ * process cwd irrelevant - and this runs the whole corpus from a directory that
+ * shares no prefix with the workspace to prove it.
+ */
+test('verdicts do not depend on the process working directory', () => {
+  const before = process.cwd()
+  try {
+    process.chdir(tmpdir())
+    for (const c of cases) {
+      const result = verify(toInput(c), stateFor(c))
+      assert.equal(
+        result.verdict,
+        c.expect,
+        `${c.id} changed verdict when the process cwd moved: got ${result.verdict} (${result.layer}/${result.code})`,
+      )
+    }
+  } finally {
+    process.chdir(before)
+  }
+})
 
 test('corpus integrity: ids are unique and every layer is represented', () => {
   const ids = cases.map((c) => c.id)
@@ -95,7 +144,7 @@ test('corpus integrity: ids are unique and every layer is represented', () => {
 })
 
 test('allow/deny asymmetry: only the rules layer may deny', () => {
-  const state: GuardState = { workspaceRoot: WORKSPACE }
+  const state = STATE
   for (const c of cases) {
     if (c.expect !== 'deny') continue
     const result = verify(toInput(c), state)
@@ -104,7 +153,7 @@ test('allow/deny asymmetry: only the rules layer may deny', () => {
 })
 
 test('the thesis pair: identical command, different verdict on stated intent', () => {
-  const state: GuardState = { workspaceRoot: WORKSPACE }
+  const state = STATE
   const silent = verify({ cmd: 'del D:\\temp\\a.txt' }, state)
   const explained = verify(
     {
@@ -119,13 +168,13 @@ test('the thesis pair: identical command, different verdict on stated intent', (
 })
 
 test('U-003 stays an ask: the wrapper script is a live bypass channel', () => {
-  const state: GuardState = { workspaceRoot: WORKSPACE }
+  const state = STATE
   const result = verify({ cmd: 'python tools\\run_bg.py start x -- del /s /q D:\\' }, state)
   assert.notEqual(result.verdict, 'pass', 'argument passthrough must never pass')
 })
 
 test('a stated reason cannot buy a deny', () => {
-  const state: GuardState = { workspaceRoot: WORKSPACE }
+  const state = STATE
   const result = verify(
     { cmd: 'rd /s /q C:\\', why: 'Everything in here is stale build output, safe to remove.' },
     state,

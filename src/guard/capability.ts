@@ -30,6 +30,7 @@ import type { Finding, GuardInput, GuardState } from './types.js'
 import { effectiveTokens, plainToken, stemVerb, isHuntVerb, WRAPPERS } from './normalize.js'
 import { HUNT_VERBS, SHELL_KEYWORDS } from './verbs.js'
 import { inspectTargets, type ScopeContext } from './scope.js'
+import { baseOf } from './path.js'
 
 /**
  * Heads whose remaining tokens are data and which cannot execute a payload.
@@ -290,7 +291,11 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
   // /etc/hosts` would be noise on the ordinary case to cover nothing.
   if (EXEMPT.has(head)) {
     const exemptTokens = raw.map(plainToken).filter((t) => t.length > 0 && !/\s/.test(t))
-    const exemptReport = inspectTargets(exemptTokens, { workspaceRoot: state.workspaceRoot })
+    const exemptBase = baseOf(state.cwd, state.workspaceRoot)
+    const exemptReport = inspectTargets(exemptTokens, {
+      workspaceRoot: state.workspaceRoot,
+      cwd: exemptBase.cwd,
+    })
     // The gate is the flag, not the head's class and not the target alone.
     // `reg` is in HUNT_VERBS, so a class test cannot tell `reg query
     // HKLM\SOFTWARE` from `reg delete HKLM\... /f`; the flag can, and the
@@ -312,7 +317,12 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
   const signals: string[] = []
 
   // Where the command is pointed, read as a location rather than a string.
-  const scopeContext: ScopeContext = { workspaceRoot: state.workspaceRoot }
+  // The base is passed down rather than inherited from the process: the whole
+  // point of a second base is that the caller gets to state it.
+  const scopeContext: ScopeContext = {
+    workspaceRoot: state.workspaceRoot,
+    cwd: baseOf(state.cwd, state.workspaceRoot).cwd,
+  }
   const report = inspectTargets(tokens, scopeContext)
 
   for (const target of report.targets) {
@@ -335,8 +345,15 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
   const unresolved = report.targets.filter((t) => t.level === 'unknown')
   const wildcard = report.targets.some((t) => t.hasGlob)
   if (unresolved.length > 0 && (recursive || force || wildcard)) {
+    const first = unresolved[0]
+    // Disclosure matters here. An unstated base directory is the one reason a
+    // relative path lands in this branch, and an operator who cannot see that
+    // reads the ask as noise. Naming the missing input turns a mystery into a
+    // line of configuration.
     signals.push(
-      `names "${unresolved[0]?.token ?? '?'}", whose target cannot be resolved statically`,
+      first?.dynamic === 'unknown-cwd'
+        ? `names "${first.token}", a relative path whose base directory the caller did not state`
+        : `names "${first?.token ?? '?'}", whose target cannot be resolved statically`,
     )
   }
 

@@ -179,6 +179,22 @@ const DRIVE_ONLY = /^[A-Za-z]:$/
  * command was written for is not necessarily the platform it runs on. Applied
  * only on win32 - on posix these already resolve into the zone table.
  */
+/**
+ * A token that names a remote location rather than a local one.
+ *
+ * `curl https://api.example.com/status` and `scp a.txt user@example.com:/tmp`
+ * were both resolved as local relative paths - the first to a directory called
+ * `https:` - and both passed only because the fiction happened to land inside
+ * the workspace. Move the workspace, or start the process somewhere else, and
+ * the same command became an ask. The token is not a path, so this layer has to
+ * say so instead of resolving it.
+ *
+ * A drive letter is never a remote host: `C:/tmp` has no dot before the colon,
+ * and `C:\` is caught by DRIVE_ABSOLUTE long before this test.
+ */
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
+const REMOTE_PATH = /^(?:[^\s\\/@]+@)?[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9]{2,}:/i
+
 const POSIX_SYSTEM =
   /^\/(?:etc|bin|sbin|boot|usr|lib|lib64|opt|root|home|dev|proc|sys)(?:\/|$)/i
 const POSIX_TEMP = /^\/(?:tmp|var\/tmp)(?:\/|$)/i
@@ -406,6 +422,12 @@ function unknownScope(token: string, dynamic: DynamicReason | null, hasGlob: boo
 export function classifyToken(token: string, ctx: ScopeContext = {}): TargetScope | null {
   const plain = stripFlag(token.replace(/["'`]/g, ''))
   if (plain.length === 0) return null
+
+  // Remote targets are not local paths, so no local question applies to them.
+  // Checked before every zone test: `file:///etc/passwd` is a URL that happens
+  // to contain a system path, and `user@host:/tmp` is a remote path that
+  // happens to contain a slash.
+  if (URL_SCHEME.test(plain) || REMOTE_PATH.test(plain)) return null
 
   if (REGISTRY_HIVE.test(plain)) {
     return { token: plain, level: 'sensitive', key: plain.toLowerCase(), display: plain, zone: 'the registry', dynamic: null, hasGlob: false }

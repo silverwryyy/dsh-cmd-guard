@@ -69,6 +69,21 @@ export interface GuardState {
   /** Absolute workspace root used for path-provenance decisions. */
   readonly workspaceRoot?: string | undefined
   /**
+   * Absolute directory that a relative token is resolved against.
+   *
+   * Separate from `workspaceRoot` because the two answer different questions:
+   * `cwd` is "what location does this token denote", `workspaceRoot` is "is
+   * that location inside the project". They coincide by default, and assuming
+   * they coincide is how one corpus took two different routes when the
+   * repository was cloned somewhere else: the token resolved against the
+   * process cwd while containment was tested against a root from the config.
+   *
+   * Undefined means the caller did not state it; see `baseOf()` for what the
+   * layers assume in that case, and note that the assumption is disclosed in
+   * the finding rather than hidden.
+   */
+  readonly cwd?: string | undefined
+  /**
    * Paths written earlier in the same session, used for the TOCTOU rule.
    * Normalised with forward slashes, compared case-insensitively.
    */
