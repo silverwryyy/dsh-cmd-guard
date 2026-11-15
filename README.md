@@ -60,9 +60,10 @@ dsh-cmd-guard: relative paths resolve against <cwd>; workspace containment is ju
 
 `npm test` 只在仓库里成立 —— npm 包只含 `lib/src`，不含测试与语料，
 `npm install dsh-cmd-guard` 之后没有测试可跑。
-351 条断言不需要模型凭证，跑完能看到每一条命令落在 pass / ask / deny 哪一格。
-首次 `npm install` 会连带装 peer 依赖，本机实测约 3 分钟、653 个包；
-插件本身零运行时依赖，不想拖宿主就用 `npm install --legacy-peer-deps`，本机实测 3 个包、12 秒。
+`npm install dsh-cmd-guard` 之后没有测试可跑，所以「357 条断言全绿」是仓库内的结果；
+外部复现要靠 `git clone && npm ci && npm test`（tag `v0.4.0`），不是装上之后再验证。
+从 0.3.0 起 `@deepseek-ai/dsh` 是 optional peer：干净目录实测 `added 1`，不拉宿主、无 peer 依赖；
+插件本身零运行时依赖，`--legacy-peer-deps` 不再需要。
 完整 headless 启动需要一个可用模型，当前本机没有凭证，见文末「兼容性」里的证据等级说明。
 
 ---
@@ -227,13 +228,14 @@ guard:
 | 模式 | 行为 |
 |---|---|
 | `strict`（默认） | 见到 `;` `&&` `||` `|` 就 ask。解析器不为它没读全的结构背书 |
-| `decompose` | 拆成语句逐条判，每条都走完整八层（含 `why`）。全部通过才 pass |
+| `decompose` | 拆成语句逐条判；语句内的 `\|` 拆成阶段，阶段同样走完整八层（含 `why`）。全部通过才 pass |
 
 `decompose` 不放宽的部分：
 
 - **deny 优先**：`git status && rm -rf /` 仍是 deny，拆段绕不过 `rules`
 - **每段都过意图层**：`git status; git push --force` 仍是 ask。第一段无害不能给第二段免检
-- **读不成语句的结构仍 ask**：命令替换 `$(…)`、进程替换 `<(…)`、后台任务 `&`、超过四段
+- **读不成语句的结构仍 ask**：命令替换 `$(…)`、进程替换 `<(…)`、后台任务 `&`、超过四条语句
+- **管道末段把上游当程序执行仍 ask**：`cat payload.sh | sh` 判 ask（`SPLIT_PIPE_TO_STDIN`）。两段单独看都干净，但真正执行的那段代码不写在这条命令里
 
 明确**不拦**的（有意画的边界，不是漏）：`curl … | python setup.py` 判 pass —— 解释器带了脚本参数，管道里的内容是喂给脚本的数据，不是送去执行的代码；`bash script.sh` 同理，它不读 stdin。真正要拦的是没有脚本参数、直接吃流的那种，也就是 `curl … | sh`。
 
@@ -350,9 +352,9 @@ npm test
 npm run test:isolated
 ```
 
-等价于 `node --test --test-isolation=none lib/test/*.test.js`，覆盖同一套 351 条断言。
+等价于 `node --test --test-isolation=none lib/test/*.test.js`，覆盖同一套 357 条断言。
 
-**351 条断言全绿**：256 条命令语料（分 8 批）+ 95 条结构、挂载与不变量断言。
+**357 条断言全绿**：256 条命令语料（分 8 批）+ 101 条结构、挂载、管道与不变量断言。
 其中一条是跨目录回归：整份语料在 `os.tmpdir()` 下重跑一遍，判定必须逐条不变。
 
 语料是按轮次冻结的，每一批对应一次「换个角度攻击」，而不是一次随手补样：
@@ -468,10 +470,13 @@ DSH 当前版本线全部是预发布（`0.2.x-rc.*`），`^0.2.0` 匹配不到�
 | 新配置 | `guard.chain: 'strict' \| 'decompose'`，默认 `strict` |
 | 新模式 | `decompose` 按语句判链，消除「一条命令一个审批」 |
 | 新 deny | `SPLIT_PIPE_TO_INTERPRETER`：`curl` / `wget` / `iwr` 等下载器的输出直接进 `sh` / `bash` / `python` / `iex` 等解释器 |
-| 新 ask 码 | `SPLIT_BACKGROUND`、`SPLIT_TOO_MANY_PARTS` |
+| 新 ask 码 | `SPLIT_BACKGROUND`、`SPLIT_TOO_MANY_PARTS`、`SPLIT_PIPE_TO_STDIN` |
+| 管道建模 | `\|` 不再计入语句数：`a \| b \| c \| d \| e` 是 1 条语句、5 个阶段，逐阶段判；语句上限仍是 4 条 |
 | 架构变化 | 「只有 `rules` 可以 deny」改为白名单，见八层结构一节 |
 
 这一版最该记的不是新功能，是一个**第一版 `decompose` 里真实存在的洞**：逐段判定时跳过了 `why` 层，只在最后对整条命令调一次，而 `why` 只看命令头。于是 `git status; git push --force` 判成 pass，`echo hi; del x` 同样。修法是让每段都过 `why`，并补四条回归（`test/decompose.test.ts` 末尾）。**「不弱化护栏」这句话，只有每段都走完整八层才成立。**
+
+同一版里还修了一处**误报**，方向相反但同样是建模错：`chainSegments` 把 `|` 当成语句分隔符，而语句上限是 4 条，于是一条只读五段管道（`git log | head | sort | uniq | cat`）会因为「段太多」被判 ask。管道是同一语句内的阶段，不是语句。现在语句只按 `;` `&&` `||` 与换行数，管道阶段单独展开、逐段判定，上限仍按语句算。反过来也补了一条：拆开管道不能把 `cat payload.sh | sh` 变成两条干净语句 —— 末段把上游当流执行时判 ask（`SPLIT_PIPE_TO_STDIN`），因为真正运行的那段代码不写在这条命令里。
 
 ## 0.3.0 改了什么
 

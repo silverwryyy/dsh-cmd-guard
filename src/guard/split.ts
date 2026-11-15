@@ -249,6 +249,58 @@ function pipeIntoInterpreter(cmd: string): Finding | null {
   return null
 }
 
+/**
+ * Stages of one statement, in order.
+ *
+ * Exported because the planner and its tests both need the same cut: a
+ * statement may hold several pipe runs, and a stage must never inherit the
+ * last stage of a neighbouring statement.
+ */
+export function pipeStages(statement: string): readonly string[] {
+  const out: string[] = []
+  for (const run of pipeRuns(statement)) out.push(...run)
+  return out
+}
+
+/**
+ * "cat payload.sh | sh": the last stage runs the stream as its program.
+ *
+ * Not a deny. The program is a local file the operator could read first,
+ * which is why pipeIntoInterpreter restricts its deny to fetchers. But not
+ * two clean statements either: judging "cat payload.sh" and "sh" on their
+ * own passes both, which is weaker than strict mode asking for the very
+ * same string. That asymmetry is the reason this is an ask, not silence.
+ */
+function pipeIntoStdin(run: PipeRun): Finding | null {
+  const last = run[run.length - 1]
+  if (last === undefined || !readsPipedProgram(last)) return null
+
+  for (let i = 0; i < run.length - 1; i++) {
+    const stage = run[i]
+    if (stage === undefined) continue
+
+    const head = headTokens(tokenize(stage))[0]
+    if (head === undefined) continue
+
+    // A downloader is settled as a deny before the planner ever runs.
+    if (FETCHERS.has(stemVerb(head))) continue
+
+    return {
+      layer: 'split',
+      verdict: 'ask',
+      code: 'SPLIT_PIPE_TO_STDIN',
+      reason:
+        'The stage "' +
+        last.trim() +
+        '" runs the output of "' +
+        head.trim() +
+        '" as its program. What executes is not written in this command, and judging the two stages on their own would pass both.',
+    }
+  }
+
+  return null
+}
+
 export function check(input: GuardInput, state: GuardState): Finding | null {
   const denied = escalateToDeny(input.cmd, state)
   if (denied !== null) return denied
@@ -322,7 +374,7 @@ export function check(input: GuardInput, state: GuardState): Finding | null {
  * operator would not read in one glance is a structure, not a content,
  * finding - so beyond this count the layer asks as it always did.
  */
-const MAX_DECOMPOSED_SEGMENTS = 4
+const MAX_DECOMPOSED_STATEMENTS = 4
 
 /** What the split layer should do with one command under `chain: decompose`. */
 export type ChainPlan =
@@ -331,12 +383,17 @@ export type ChainPlan =
   | { readonly kind: 'finding'; readonly finding: Finding }
 
 /**
- * Split into statements on `;`, `|`, `&&`, `||` and unquoted newlines.
+ * Split into statements on `;`, `&&`, `||` and unquoted newlines.
  *
  * `>` and `<` are deliberately not separators here. `echo "const x = 1" > src/x.ts`
  * is one statement, and cutting at the redirect would hand the layers a bare
  * filename to judge as a command - the same near-miss the strict path already
  * documents in check().
+ *
+ * `|` is not a separator either. A pipe carries one statement output into
+ * the next stage of the same statement: `git log | head` is one statement,
+ * not two. Counting stages as statements asked on every harmless pipeline
+ * and spent the budget on stages rather than on commands. See pipeStages().
  *
  * Quotes are honoured, so `echo "a; b"` stays one statement.
  */
@@ -361,9 +418,19 @@ export function chainSegments(cmd: string): string[] {
       continue
     }
 
-    if (ch === '\n' || ch === '\r' || ch === ';' || ch === '|') {
+    if (ch === '\n' || ch === '\r' || ch === ';') {
       out.push(cur)
       cur = ''
+      continue
+    }
+
+    // "||" selects a statement; a single "|" pipes into the next stage and
+    // stays inside this one. Missing this would have judged "a || b" as a
+    // single statement whose text still contains the operator.
+    if (ch === '|' && cmd[i + 1] === '|') {
+      out.push(cur)
+      cur = ''
+      i += 1
       continue
     }
 
@@ -445,10 +512,13 @@ export function planChain(cmd: string, state: GuardState): ChainPlan {
     }
   }
 
-  const segments = chainSegments(cmd)
-  if (segments.length <= 1) return { kind: 'single' }
+  const statements = chainSegments(cmd)
 
-  if (segments.length > MAX_DECOMPOSED_SEGMENTS) {
+  // Counted in statements, not in stages. A pipe is one statement whose
+  // output a second stage consumes: "a | b | c | d | e" used to spend the
+  // whole budget on a read-only pipeline and ask, which measured the wrong
+  // thing. Statements are what an operator reads at a glance.
+  if (statements.length > MAX_DECOMPOSED_STATEMENTS) {
     return {
       kind: 'finding',
       finding: {
@@ -456,13 +526,29 @@ export function planChain(cmd: string, state: GuardState): ChainPlan {
         verdict: 'ask',
         code: 'SPLIT_TOO_MANY_PARTS',
         reason:
-          segments.length +
+          statements.length +
           ' statements in one call; decompose inspects at most ' +
-          MAX_DECOMPOSED_SEGMENTS +
+          MAX_DECOMPOSED_STATEMENTS +
           '. Beyond that the chain is a structure, not a command an operator reads at a glance.',
       },
     }
   }
 
-  return { kind: 'segments', segments }
+  // Walk the statements and, inside each one, its pipe runs. A stage is
+  // judged like a statement, but it is counted as one only when it stands
+  // alone: the run decides which stages feed which.
+  const stages: string[] = []
+  for (const statement of statements) {
+    for (const run of pipeRuns(statement)) {
+      const stdinAsk = run.length > 1 ? pipeIntoStdin(run) : null
+      if (stdinAsk !== null) return { kind: 'finding', finding: stdinAsk }
+      stages.push(...run)
+    }
+  }
+
+  // One stage and no separator: there is nothing to decompose, and the
+  // strict path judges the string exactly as it always did.
+  if (stages.length <= 1) return { kind: 'single' }
+
+  return { kind: 'segments', segments: stages }
 }

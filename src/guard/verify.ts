@@ -242,7 +242,7 @@ function decompose(subject: GuardInput, state: GuardState, depth: number): Outco
           verdict: 'deny',
           layer: judged.layer,
           code: judged.code,
-          reason: `${judged.reason} (statement: ${segment})`,
+          reason: `${judged.reason} (segment: ${segment})`,
           findings,
         },
       }
@@ -253,7 +253,7 @@ function decompose(subject: GuardInput, state: GuardState, depth: number): Outco
         layer: judged.layer === 'clean' ? 'split' : judged.layer,
         verdict: 'ask',
         code: judged.code,
-        reason: `${judged.reason} (statement: ${segment})`,
+        reason: `${judged.reason} (segment: ${segment})`,
       }
     }
   }
